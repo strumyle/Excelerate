@@ -1,0 +1,31 @@
+project_id = "xrfiltyxdviefanplykg"
+
+[functions.issue-certificate]
+verify_jwt = false
+
+[functions.verify-certificate]
+verify_jwt = false
+
+[functions.scorm-upload]
+verify_jwt = true
+
+[functions.scorm-start]
+verify_jwt = true
+
+[functions.scorm-runtime]
+verify_jwt = true
+
+[functions.scorm-file]
+verify_jwt = false
+
+[functions.admin-scorm-packages]
+verify_jwt = false
+
+[functions.learner-scorm-lessons]
+verify_jwt = true
+
+[functions.list-scorm-lessons]
+verify_jwt = false
+
+[functions.grade-submission]
+verify_jwt = false

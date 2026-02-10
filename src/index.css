@@ -1,0 +1,242 @@
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Inter for UI, Instrument Serif for display - clean, modern, enterprise */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+@layer base {
+  :root {
+    /* Deep navy to white - clean enterprise palette */
+    --background: 210 20% 98%;
+    --foreground: 222 47% 11%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+
+    /* Navy blue primary */
+    --primary: 222 47% 20%;
+    --primary-foreground: 0 0% 100%;
+
+    /* Subtle warm gray secondary */
+    --secondary: 220 14% 96%;
+    --secondary-foreground: 222 47% 11%;
+
+    --muted: 220 14% 96%;
+    --muted-foreground: 215 16% 47%;
+
+    /* Emerald accent for CTAs */
+    --accent: 160 84% 39%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 222 47% 20%;
+
+    --radius: 0.5rem;
+
+    /* Professional design tokens */
+    --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+    --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+    --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+    --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+
+    --sidebar-background: 222 47% 11%;
+    --sidebar-foreground: 210 40% 98%;
+    --sidebar-primary: 160 84% 39%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 222 47% 20%;
+    --sidebar-accent-foreground: 0 0% 100%;
+    --sidebar-border: 222 30% 25%;
+    --sidebar-ring: 160 84% 39%;
+  }
+
+  .dark {
+    --background: 222 47% 11%;
+    --foreground: 210 40% 98%;
+
+    --card: 222 47% 15%;
+    --card-foreground: 210 40% 98%;
+
+    --popover: 222 47% 15%;
+    --popover-foreground: 210 40% 98%;
+
+    --primary: 210 40% 98%;
+    --primary-foreground: 222 47% 11%;
+
+    --secondary: 222 47% 20%;
+    --secondary-foreground: 210 40% 98%;
+
+    --muted: 222 47% 20%;
+    --muted-foreground: 215 20% 65%;
+
+    --accent: 160 84% 39%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 63% 31%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 222 30% 25%;
+    --input: 222 30% 25%;
+    --ring: 160 84% 39%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-size: 16px;
+    line-height: 1.6;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-weight: 600;
+    letter-spacing: -0.025em;
+    line-height: 1.2;
+  }
+}
+
+/* Professional component styles */
+@layer components {
+  .container-tight {
+    @apply max-w-5xl mx-auto px-4 sm:px-6 lg:px-8;
+  }
+
+  .section-spacing {
+    @apply py-24 sm:py-32;
+  }
+
+  .section-spacing-sm {
+    @apply py-16 sm:py-20;
+  }
+
+  /* Hero section - dark with subtle grid pattern */
+  .hero-section {
+    @apply relative overflow-hidden;
+    background: linear-gradient(180deg, hsl(222, 47%, 11%) 0%, hsl(222, 47%, 15%) 100%);
+  }
+
+  .hero-section::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image: 
+      linear-gradient(to right, hsl(222 47% 25% / 0.1) 1px, transparent 1px),
+      linear-gradient(to bottom, hsl(222 47% 25% / 0.1) 1px, transparent 1px);
+    background-size: 64px 64px;
+    mask-image: radial-gradient(ellipse 80% 50% at 50% 0%, black, transparent);
+  }
+
+  /* Feature cards - clean with subtle borders */
+  .feature-card {
+    @apply bg-card rounded-xl border border-border p-6;
+    transition: all 0.2s ease;
+  }
+
+  .feature-card:hover {
+    @apply border-primary/20;
+    box-shadow: var(--shadow-lg);
+    transform: translateY(-2px);
+  }
+
+  /* Stat cards */
+  .stat-card {
+    @apply text-center;
+  }
+
+  .stat-number {
+    @apply text-4xl font-bold text-primary;
+    letter-spacing: -0.03em;
+  }
+
+  .stat-label {
+    @apply text-sm text-muted-foreground mt-1;
+  }
+
+  /* CTA buttons */
+  .btn-primary {
+    @apply inline-flex items-center justify-center rounded-lg px-6 py-3 text-sm font-semibold;
+    @apply bg-accent text-accent-foreground;
+    @apply transition-all duration-200;
+    @apply hover:bg-accent/90;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  }
+
+  .btn-primary:hover {
+    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.25);
+    transform: translateY(-1px);
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center rounded-lg px-6 py-3 text-sm font-semibold;
+    @apply bg-white text-foreground border border-border;
+    @apply transition-all duration-200;
+    @apply hover:bg-secondary hover:border-primary/20;
+  }
+
+  /* Badge styles */
+  .badge-outline {
+    @apply inline-flex items-center rounded-full px-3 py-1 text-xs font-medium;
+    @apply border border-border text-muted-foreground;
+  }
+
+  .badge-accent {
+    @apply inline-flex items-center rounded-full px-3 py-1 text-xs font-medium;
+    @apply bg-accent/10 text-accent border border-accent/20;
+  }
+
+  /* Grid pattern overlay */
+  .grid-pattern {
+    background-image: 
+      linear-gradient(to right, hsl(220 13% 91% / 0.5) 1px, transparent 1px),
+      linear-gradient(to bottom, hsl(220 13% 91% / 0.5) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+
+  /* Gradient text */
+  .text-gradient {
+    background: linear-gradient(135deg, hsl(160, 84%, 39%) 0%, hsl(160, 84%, 29%) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Animated underline for links */
+  .link-underline {
+    @apply relative;
+  }
+
+  .link-underline::after {
+    content: '';
+    @apply absolute bottom-0 left-0 w-0 h-0.5 bg-accent transition-all duration-300;
+  }
+
+  .link-underline:hover::after {
+    @apply w-full;
+  }
+}
+
+/* Smooth scrolling */
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
