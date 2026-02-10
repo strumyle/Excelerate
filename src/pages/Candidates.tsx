@@ -30,7 +30,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { User, Mail, Search, Filter, UserPlus, Calendar } from 'lucide-react';
+import { User, Mail, Search, Filter, UserPlus, Calendar, Download } from 'lucide-react';
 import { User as UserType, Candidate } from '@/lib/supabase';
 import { useToast } from '@/components/ui/use-toast';
 import { Badge } from '@/components/ui/badge';
@@ -50,6 +50,30 @@ const Candidates = () => {
     user_group: '',
   });
   const { toast } = useToast();
+
+  const downloadCandidateTemplate = () => {
+    const csvTemplate = [
+      'email,full_name,unit',
+      'jane.doe@babbangona.com,Jane Doe,Finance Operations',
+      'john.smith@babbangona.com,John Smith,Operator Success',
+    ].join('\n');
+
+    const blob = new Blob([csvTemplate], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', 'candidate_upload_template.csv');
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    toast({
+      title: 'Template downloaded',
+      description: 'Use this CSV format for bulk candidate uploads.',
+    });
+  };
 
   useEffect(() => {
     fetchCandidates();
@@ -256,64 +280,69 @@ const Candidates = () => {
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-3xl font-bold">Candidates</h1>
-        <Dialog open={isAddingCandidate} onOpenChange={setIsAddingCandidate}>
-          <DialogTrigger asChild>
-            <Button>
-              <UserPlus className="mr-2 h-4 w-4" /> Add Candidate
-            </Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Add New Candidate</DialogTitle>
-              <DialogDescription>
-                Add a new candidate to the system. They will receive an email to set their password.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-4 py-2">
-              <div className="space-y-2">
-                <Label htmlFor="email">Email Address</Label>
-                <Input
-                  id="email"
-                  type="email"
-                  placeholder="candidate@babangona.com"
-                  value={newCandidate.email}
-                  onChange={(e) => setNewCandidate({...newCandidate, email: e.target.value})}
-                />
-                {newCandidate.email && !newCandidate.email.endsWith('@babbangona.com') && (
-                  <p className="text-xs text-red-500">
-                    Only @babbangona.com email addresses are allowed
-                  </p>
-                )}
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="name">Full Name</Label>
-                <Input
-                  id="name"
-                  placeholder="John Doe"
-                  value={newCandidate.full_name}
-                  onChange={(e) => setNewCandidate({...newCandidate, full_name: e.target.value})}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="user_group">Unit/Department</Label>
-                <Input
-                  id="user_group"
-                  placeholder="e.g., Marketing, Finance, HR"
-                  value={newCandidate.user_group}
-                  onChange={(e) => setNewCandidate({...newCandidate, user_group: e.target.value})}
-                />
-              </div>
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setIsAddingCandidate(false)}>
-                Cancel
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" onClick={downloadCandidateTemplate}>
+            <Download className="mr-2 h-4 w-4" /> Download Upload Template
+          </Button>
+          <Dialog open={isAddingCandidate} onOpenChange={setIsAddingCandidate}>
+            <DialogTrigger asChild>
+              <Button>
+                <UserPlus className="mr-2 h-4 w-4" /> Add Candidate
               </Button>
-              <Button onClick={handleAddCandidate}>
-                Add Candidate
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Add New Candidate</DialogTitle>
+                <DialogDescription>
+                  Add a new candidate to the system. They will receive an email to set their password.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4 py-2">
+                <div className="space-y-2">
+                  <Label htmlFor="email">Email Address</Label>
+                  <Input
+                    id="email"
+                    type="email"
+                    placeholder="candidate@babangona.com"
+                    value={newCandidate.email}
+                    onChange={(e) => setNewCandidate({...newCandidate, email: e.target.value})}
+                  />
+                  {newCandidate.email && !newCandidate.email.endsWith('@babbangona.com') && (
+                    <p className="text-xs text-red-500">
+                      Only @babbangona.com email addresses are allowed
+                    </p>
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="name">Full Name</Label>
+                  <Input
+                    id="name"
+                    placeholder="John Doe"
+                    value={newCandidate.full_name}
+                    onChange={(e) => setNewCandidate({...newCandidate, full_name: e.target.value})}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="user_group">Unit/Department</Label>
+                  <Input
+                    id="user_group"
+                    placeholder="e.g., Marketing, Finance, HR"
+                    value={newCandidate.user_group}
+                    onChange={(e) => setNewCandidate({...newCandidate, user_group: e.target.value})}
+                  />
+                </div>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setIsAddingCandidate(false)}>
+                  Cancel
+                </Button>
+                <Button onClick={handleAddCandidate}>
+                  Add Candidate
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </div>
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>

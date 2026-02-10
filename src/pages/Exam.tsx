@@ -153,7 +153,11 @@ const Exam = () => {
         return { submissionId: inProgress.id, questionIds: lockedQuestionIds };
       }
 
-      const fallbackSample = sampleQuestionIds(test.question_ids || [], assignment.question_count);
+      const desiredCount =
+        assignment.question_count ||
+        test.question_count ||
+        (test.question_ids || []).length;
+      const fallbackSample = sampleQuestionIds(test.question_ids || [], desiredCount);
       if (fallbackSample.length === 0) {
         throw new Error('Assigned test bank has no questions.');
       }
@@ -198,7 +202,11 @@ const Exam = () => {
       consumedRetakePermissionId = permission.id;
     }
 
-    const sampledQuestionIds = sampleQuestionIds(test.question_ids || [], assignment.question_count);
+    const desiredCount =
+      assignment.question_count ||
+      test.question_count ||
+      (test.question_ids || []).length;
+    const sampledQuestionIds = sampleQuestionIds(test.question_ids || [], desiredCount);
     if (sampledQuestionIds.length === 0) {
       throw new Error('Assigned test bank has no questions.');
     }
@@ -257,7 +265,8 @@ const Exam = () => {
       }
     }
 
-    const sampledQuestionIds = sampleQuestionIds(test.question_ids || [], (test.question_ids || []).length);
+    const desiredCount = test.question_count || (test.question_ids || []).length;
+    const sampledQuestionIds = sampleQuestionIds(test.question_ids || [], desiredCount);
     if (sampledQuestionIds.length === 0) {
       throw new Error('Selected test has no questions.');
     }

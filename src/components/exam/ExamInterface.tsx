@@ -38,6 +38,7 @@ export function ExamInterface({
   const [submitting, setSubmitting] = useState(false);
   const [testData, setTestData] = useState<any>(null);
   const [violations, setViolations] = useState(0);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   const { toast } = useToast();
   const navigate = useNavigate();
@@ -158,6 +159,46 @@ export function ExamInterface({
   }, [testId, submissionId, propQuestionIds, navigate, toast]);
 
   useEffect(() => {
+    const root = document.documentElement;
+    const previousOverflow = document.body.style.overflow;
+
+    const requestFullscreen = async () => {
+      if (!document.fullscreenElement && root.requestFullscreen) {
+        try {
+          await root.requestFullscreen();
+        } catch {
+          // Ignore if browser blocks fullscreen.
+        }
+      }
+    };
+
+    const handleFullscreenChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+
+    document.body.style.overflow = 'hidden';
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    handleFullscreenChange();
+    void requestFullscreen();
+
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, []);
+
+  const handleEnterFullscreen = async () => {
+    const root = document.documentElement;
+    if (!document.fullscreenElement && root.requestFullscreen) {
+      try {
+        await root.requestFullscreen();
+      } catch {
+        // Ignore if browser blocks fullscreen.
+      }
+    }
+  };
+
+  useEffect(() => {
     if (loading || !submissionId) return;
 
     const setupAntiCheat = async () => {
@@ -193,7 +234,7 @@ export function ExamInterface({
   }, [loading, submissionId, navigate, toast]);
 
   useEffect(() => {
-    if (loading || timeRemaining <= 0) return;
+    if (loading || timeRemaining <= 0 || !isFullscreen) return;
 
     const timer = setInterval(() => {
       setTimeRemaining((prevTime) => {
@@ -308,14 +349,35 @@ export function ExamInterface({
     );
   }
 
+  if (!isFullscreen) {
+    return (
+      <div className="min-h-screen w-full bg-slate-50 p-4 flex items-center justify-center">
+        <Card className="w-full max-w-lg border-excelerate-100 shadow-lg">
+          <CardHeader>
+            <CardTitle>Full screen required</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              This assessment must be taken in full screen to reduce malpractice.
+              Click the button below to continue.
+            </p>
+            <Button onClick={handleEnterFullscreen} className="w-full">
+              Enter Full Screen
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   const currentQuestion = questions[currentQuestionIndex];
   const progress = questions.length > 0 ? ((currentQuestionIndex + 1) / questions.length) * 100 : 0;
   const isTimeLow = timeRemaining < 60;
   const questionOptions = currentQuestion && Array.isArray(currentQuestion.options) ? currentQuestion.options : [];
 
   return (
-    <div className="container max-w-4xl mx-auto p-4">
-      <Card className="shadow-lg border-excelerate-100">
+    <div className="min-h-screen w-full bg-slate-50 p-4">
+      <Card className="shadow-lg border-excelerate-100 h-[calc(100vh-2rem)] w-full max-w-6xl mx-auto flex flex-col">
         <CardHeader className="space-y-1">
           <div className="flex justify-between items-center">
             <div className="flex items-center gap-3">
@@ -351,7 +413,7 @@ export function ExamInterface({
           </div>
           <Progress value={progress} className="h-2" />
         </CardHeader>
-        <CardContent className="pt-4">
+        <CardContent className="pt-4 flex-1 overflow-y-auto">
           <div className="space-y-6">
             <div className="text-lg font-medium">{currentQuestion?.text}</div>
 

@@ -238,6 +238,7 @@ export interface Test {
   duration_minutes: number;
   passing_percentage: number;
   question_ids: string[];
+  question_count?: number | null;
   created_by: string;
   created_at: string;
   updated_at: string;

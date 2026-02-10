@@ -20,6 +20,7 @@ export default function LearningPath() {
   const [certificates, setCertificates] = useState<Record<string, Certificate>>({});
   const [loading, setLoading] = useState(true);
   const [generatingCert, setGeneratingCert] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'enrolled' | 'scorm' | 'available' | 'search'>('enrolled');
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -154,7 +155,7 @@ export default function LearningPath() {
         </p>
       </div>
 
-      <Tabs defaultValue="enrolled" className="space-y-6">
+      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as typeof activeTab)} className="space-y-6">
         <TabsList className="grid w-full grid-cols-4">
           <TabsTrigger value="enrolled" className="flex items-center gap-2">
             <BookOpen className="h-4 w-4" />
@@ -269,7 +270,7 @@ export default function LearningPath() {
               <p className="text-muted-foreground mb-4">
                 Browse available courses to start your learning journey.
               </p>
-              <Button onClick={() => navigate('/available')}>
+              <Button onClick={() => setActiveTab('available')}>
                 Browse Courses
               </Button>
             </div>

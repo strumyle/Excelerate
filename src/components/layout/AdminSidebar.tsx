@@ -102,7 +102,13 @@ export function AdminSidebar() {
   return (
     <div className="h-screen flex flex-col bg-sidebar border-r border-sidebar-border">
       <div className="p-4 flex items-center gap-2 border-b border-sidebar-border">
-        <FileSpreadsheet className="h-6 w-6 text-sidebar-foreground" />
+        <div className="h-8 w-8 rounded-lg overflow-hidden bg-white border border-sidebar-border/60 flex items-center justify-center">
+          <img
+            src="/logo.png"
+            alt="Excelerate logo"
+            className="h-full w-full object-contain p-1"
+          />
+        </div>
         <h1 className="font-bold text-xl text-sidebar-foreground">Excelerate</h1>
       </div>
       <nav className="flex-1 overflow-y-auto p-2">

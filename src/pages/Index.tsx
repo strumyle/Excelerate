@@ -120,10 +120,14 @@ const Index = () => {
       <nav className="sticky top-0 z-50 w-full bg-background/80 backdrop-blur-md border-b border-border">
         <div className="container mx-auto h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center">
-              <span className="text-primary-foreground font-bold text-sm">M</span>
+            <div className="w-8 h-8 rounded-lg overflow-hidden bg-white border border-border/60 flex items-center justify-center">
+              <img
+                src="/logo.png"
+                alt="Excelerate logo"
+                className="h-full w-full object-cover"
+              />
             </div>
-            <span className="text-xl font-semibold text-foreground">MyExcelerate</span>
+            <span className="text-xl font-semibold text-foreground">Excelerate</span>
           </div>
           
           <div className="hidden md:flex items-center gap-8">
@@ -133,8 +137,8 @@ const Index = () => {
             <a href="#how-it-works" className="text-sm text-muted-foreground hover:text-foreground transition-colors link-underline">
               How it Works
             </a>
-            <a href="#pricing" className="text-sm text-muted-foreground hover:text-foreground transition-colors link-underline">
-              Pricing
+            <a href="#access" className="text-sm text-muted-foreground hover:text-foreground transition-colors link-underline">
+              Access
             </a>
           </div>
           
@@ -143,7 +147,7 @@ const Index = () => {
               Sign In
             </Button>
             <Button onClick={() => navigate('/auth')} className="bg-accent hover:bg-accent/90 text-accent-foreground">
-              Get Started
+              Open Dashboard
               <ArrowRight className="ml-2 h-4 w-4" />
             </Button>
           </div>
@@ -156,7 +160,7 @@ const Index = () => {
           <div className="max-w-3xl mx-auto text-center">
             <div className="inline-flex items-center gap-2 badge-accent mb-6">
               <Lock className="h-3 w-3" />
-              <span>Enterprise-grade skill assessment</span>
+              <span>Internal skill assessment</span>
             </div>
             
             <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold text-white mb-6 tracking-tight">
@@ -166,7 +170,7 @@ const Index = () => {
             
             <p className="text-lg md:text-xl text-white/70 mb-10 max-w-2xl mx-auto leading-relaxed">
               Proctored assessments with randomized questions, real-time analytics, 
-              and instant results. Measure actual skill—not search ability.
+              and instant results. Measure actual skill, not search ability.
             </p>
             
             <div className="flex justify-center">
@@ -210,7 +214,7 @@ const Index = () => {
             <div className="bg-card rounded-2xl p-8 border border-border">
               <span className="text-sm font-medium text-accent uppercase tracking-wider">The Solution</span>
               <h3 className="text-2xl font-bold text-foreground mt-3 mb-6">
-                MyExcelerate fixes this
+                Excelerate fixes this
               </h3>
               <div className="space-y-4">
                 {[
@@ -286,13 +290,14 @@ const Index = () => {
       </section>
 
       {/* CTA */}
-      <section id="pricing" className="section-spacing bg-primary text-primary-foreground">
+      <section id="access" className="section-spacing bg-primary text-primary-foreground">
         <div className="container mx-auto text-center">
           <h2 className="text-3xl md:text-4xl font-bold mb-4">
-            Ready to improve your assessments?
+            Internal access only
           </h2>
           <p className="text-xl text-primary-foreground/70 mb-8 max-w-2xl mx-auto">
-            Join organizations that trust MyExcelerate for fair, accurate skill testing.
+            Excelerate is used internally to measure skill proficiency across teams.
+            Sign in with your company account to continue.
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
             <Button 
@@ -300,16 +305,8 @@ const Index = () => {
               onClick={() => navigate('/auth')}
               className="bg-accent hover:bg-accent/90 text-accent-foreground h-12 px-8"
             >
-              Start Free Trial
+              Sign In
               <ArrowRight className="ml-2 h-4 w-4" />
-            </Button>
-            <Button 
-              size="lg"
-              variant="outline"
-              onClick={() => navigate('/auth')}
-              className="border-primary-foreground/20 text-primary-foreground hover:bg-primary-foreground/10 h-12 px-8"
-            >
-              Contact Sales
             </Button>
           </div>
         </div>
@@ -321,33 +318,37 @@ const Index = () => {
           <div className="grid md:grid-cols-4 gap-8 mb-12">
             <div>
               <div className="flex items-center gap-2 mb-4">
-                <div className="w-8 h-8 bg-accent rounded-lg flex items-center justify-center">
-                  <span className="text-accent-foreground font-bold text-sm">M</span>
+                <div className="w-8 h-8 rounded-lg overflow-hidden bg-white border border-background/20 flex items-center justify-center">
+                  <img
+                    src="/logo.png"
+                    alt="Excelerate logo"
+                    className="h-full w-full object-cover"
+                  />
                 </div>
-                <span className="text-lg font-semibold">MyExcelerate</span>
+                <span className="text-lg font-semibold">Excelerate</span>
               </div>
               <p className="text-sm text-background/60">
-                Enterprise-grade Excel skill assessment platform.
+                Internal Excel skill assessment tool.
               </p>
             </div>
             
             <div>
-              <h4 className="font-semibold mb-4">Product</h4>
+              <h4 className="font-semibold mb-4">Platform</h4>
               <ul className="space-y-2 text-sm text-background/60">
                 <li><a href="#features" className="hover:text-background transition-colors">Features</a></li>
-                <li><a href="#pricing" className="hover:text-background transition-colors">Pricing</a></li>
-                <li><a href="#" className="hover:text-background transition-colors">Integrations</a></li>
-                <li><a href="#" className="hover:text-background transition-colors">API</a></li>
+                <li><a href="#how-it-works" className="hover:text-background transition-colors">How it Works</a></li>
+                <li><a href="#access" className="hover:text-background transition-colors">Access</a></li>
+                <li><a href="#" className="hover:text-background transition-colors">Security</a></li>
               </ul>
             </div>
             
             <div>
-              <h4 className="font-semibold mb-4">Company</h4>
+              <h4 className="font-semibold mb-4">Internal</h4>
               <ul className="space-y-2 text-sm text-background/60">
-                <li><a href="#" className="hover:text-background transition-colors">About</a></li>
-                <li><a href="#" className="hover:text-background transition-colors">Blog</a></li>
-                <li><a href="#" className="hover:text-background transition-colors">Careers</a></li>
-                <li><a href="#" className="hover:text-background transition-colors">Contact</a></li>
+                <li><a href="#" className="hover:text-background transition-colors">Teams</a></li>
+                <li><a href="#" className="hover:text-background transition-colors">Guidelines</a></li>
+                <li><a href="#" className="hover:text-background transition-colors">Support</a></li>
+                <li><a href="#" className="hover:text-background transition-colors">Admin Help</a></li>
               </ul>
             </div>
             
@@ -362,7 +363,7 @@ const Index = () => {
           </div>
           
           <div className="pt-8 border-t border-background/10 text-center text-sm text-background/40">
-            © {new Date().getFullYear()} MyExcelerate. All rights reserved.
+            (c) {new Date().getFullYear()} Excelerate. All rights reserved.
           </div>
         </div>
       </footer>
@@ -371,3 +372,5 @@ const Index = () => {
 };
 
 export default Index;
+
+

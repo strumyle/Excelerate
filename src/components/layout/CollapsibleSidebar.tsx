@@ -122,7 +122,13 @@ export function CollapsibleSidebar() {
       <div className="p-4 flex items-center justify-between border-b border-sidebar-border">
         {!isCollapsed && (
           <div className="flex items-center gap-2">
-            <FileSpreadsheet className="h-6 w-6 text-sidebar-foreground" />
+            <div className="h-8 w-8 rounded-lg overflow-hidden bg-white border border-sidebar-border/60 flex items-center justify-center">
+              <img
+                src="/logo.png"
+                alt="Excelerate logo"
+                className="h-full w-full object-contain p-1"
+              />
+            </div>
             <h1 className="font-bold text-xl text-sidebar-foreground">Excelerate</h1>
           </div>
         )}

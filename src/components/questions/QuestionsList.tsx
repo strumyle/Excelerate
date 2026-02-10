@@ -20,8 +20,9 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Question } from '@/lib/supabase';
-import { Edit, Trash2, Search, Plus } from 'lucide-react';
+import { Edit, Trash2, Search, Plus, Download } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { useToast } from '@/components/ui/use-toast';
 
 export function QuestionsList() {
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -29,6 +30,8 @@ export function QuestionsList() {
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('all');
   const [categories, setCategories] = useState<string[]>([]);
+  const [downloading, setDownloading] = useState(false);
+  const { toast } = useToast();
 
   useEffect(() => {
     fetchQuestions();
@@ -77,15 +80,100 @@ export function QuestionsList() {
     return text.length > maxLength ? `${text.substring(0, maxLength)}...` : text;
   };
 
+  const escapeCsvValue = (value: string | number | null | undefined) => {
+    if (value === null || value === undefined) return '';
+    const stringValue = String(value);
+    if (/[",\n]/.test(stringValue)) {
+      return `"${stringValue.replace(/"/g, '""')}"`;
+    }
+    return stringValue;
+  };
+
+  const downloadAllQuestions = async () => {
+    setDownloading(true);
+    try {
+      const { data, error } = await supabase.from('questions').select('*').order('created_at', { ascending: true });
+      if (error) throw error;
+
+      const rows = (data || []).map((question) => {
+        const options = Array.isArray(question.options) ? question.options : [];
+        const [optionA, optionB, optionC, optionD] = options;
+        return [
+          question.text,
+          optionA || '',
+          optionB || '',
+          optionC || '',
+          optionD || '',
+          question.correct_answer || '',
+          question.category || '',
+          question.difficulty || '',
+          question.test_type || '',
+          question.points ?? '',
+        ];
+      });
+
+      const header = [
+        'text',
+        'option_a',
+        'option_b',
+        'option_c',
+        'option_d',
+        'correct_answer',
+        'category',
+        'difficulty',
+        'test_type',
+        'points',
+      ];
+
+      const csvLines = [header, ...rows]
+        .map((row) => row.map((value) => escapeCsvValue(value)).join(','))
+        .join('\n');
+
+      const blob = new Blob([csvLines], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'question_bank.csv');
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      toast({
+        title: 'Download ready',
+        description: `Exported ${rows.length} questions.`,
+      });
+    } catch (error) {
+      console.error('Error downloading questions:', error);
+      toast({
+        title: 'Download failed',
+        description: 'Unable to export questions right now.',
+        variant: 'destructive',
+      });
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle>Questions Library</CardTitle>
-        <Button asChild>
-          <Link to="/questions/create">
-            <Plus className="mr-2 h-4 w-4" /> Add Question
-          </Link>
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={downloadAllQuestions}
+            disabled={downloading}
+          >
+            <Download className="mr-2 h-4 w-4" />
+            {downloading ? 'Preparing...' : 'Download All'}
+          </Button>
+          <Button asChild>
+            <Link to="/questions/create">
+              <Plus className="mr-2 h-4 w-4" /> Add Question
+            </Link>
+          </Button>
+        </div>
       </CardHeader>
       <CardContent>
         <div className="flex flex-col md:flex-row gap-4 mb-6">

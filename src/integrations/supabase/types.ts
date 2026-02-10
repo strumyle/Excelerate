@@ -997,6 +997,7 @@ export type Database = {
           id: string
           is_active: boolean | null
           passing_percentage: number
+          question_count: number | null
           question_ids: string[]
           results_released: boolean | null
           test_type: string | null
@@ -1012,6 +1013,7 @@ export type Database = {
           id?: string
           is_active?: boolean | null
           passing_percentage: number
+          question_count?: number | null
           question_ids: string[]
           results_released?: boolean | null
           test_type?: string | null
@@ -1027,6 +1029,7 @@ export type Database = {
           id?: string
           is_active?: boolean | null
           passing_percentage?: number
+          question_count?: number | null
           question_ids?: string[]
           results_released?: boolean | null
           test_type?: string | null

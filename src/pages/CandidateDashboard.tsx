@@ -14,7 +14,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock,
-  FileSpreadsheet,
   Gauge,
   ListChecks,
   LogOut,
@@ -106,7 +105,10 @@ export default function CandidateDashboard() {
         .eq('is_active', true)
         .order('created_at', { ascending: false });
 
-      if (assignmentsError) throw assignmentsError;
+      if (assignmentsError) {
+        const message = assignmentsError.message || 'Failed to load assignments.';
+        throw new Error(message);
+      }
 
       const assignments = assignmentsData || [];
       if (assignments.length === 0) {
@@ -173,9 +175,19 @@ export default function CandidateDashboard() {
       setAssessments(mapped);
     } catch (error) {
       console.error('Error fetching assigned assessments:', error);
+      const rawMessage = error instanceof Error ? error.message : '';
+      const lowerMessage = rawMessage.toLowerCase();
+      const needsMigration =
+        lowerMessage.includes('permission denied') ||
+        lowerMessage.includes('does not exist') ||
+        lowerMessage.includes('relation') ||
+        lowerMessage.includes('schema');
+      const description = needsMigration
+        ? 'Assignments are not available yet. Please ask an admin to run the latest database migrations.'
+        : 'Failed to load your assigned assessments.';
       toast({
         title: 'Error',
-        description: 'Failed to load your assigned assessments.',
+        description,
         variant: 'destructive',
       });
     }
@@ -545,10 +557,10 @@ export default function CandidateDashboard() {
   }
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-gradient-to-br from-slate-100 via-slate-50 to-blue-100">
+    <div className="relative min-h-screen h-screen overflow-hidden bg-gradient-to-br from-slate-100 via-slate-50 to-blue-100">
       <div className="pointer-events-none absolute -top-24 right-0 h-72 w-72 rounded-full bg-primary/15 blur-3xl" />
       <div className="pointer-events-none absolute bottom-0 left-0 h-80 w-80 rounded-full bg-accent/10 blur-3xl" />
-      <div className="relative flex min-h-screen">
+      <div className="relative flex h-screen">
         <div
           className={cn(
             'fixed inset-0 z-40 bg-black/40 transition-opacity md:hidden',
@@ -559,15 +571,19 @@ export default function CandidateDashboard() {
 
         <aside
           className={cn(
-            'fixed md:static top-0 left-0 z-50 h-screen bg-sidebar border-r border-sidebar-border transition-all duration-300 flex flex-col',
+            'fixed md:sticky md:top-0 top-0 left-0 z-50 h-screen bg-sidebar border-r border-sidebar-border transition-all duration-300 flex flex-col',
             isSidebarCollapsed ? 'md:w-16' : 'md:w-64',
             isMobileSidebarOpen ? 'w-72 translate-x-0' : 'w-72 -translate-x-full md:translate-x-0'
           )}
         >
           <div className="p-4 flex items-center justify-between border-b border-sidebar-border">
             <div className={cn('flex items-center gap-3', isSidebarCollapsed && 'md:hidden')}>
-              <div className="h-10 w-10 rounded-xl bg-sidebar-accent flex items-center justify-center">
-                <FileSpreadsheet className="h-5 w-5 text-sidebar-foreground" />
+              <div className="h-10 w-10 rounded-xl bg-white border border-sidebar-border/60 flex items-center justify-center">
+                <img
+                  src="/logo.png"
+                  alt="Excelerate logo"
+                  className="h-full w-full object-contain p-1"
+                />
               </div>
               <div>
                 <h1 className="font-semibold text-lg text-sidebar-foreground">Excelerate</h1>
@@ -657,7 +673,7 @@ export default function CandidateDashboard() {
           </div>
         </aside>
 
-        <main className="flex-1 min-w-0">
+        <main className="flex-1 min-w-0 h-screen overflow-y-auto">
           <div className="p-4 md:p-6 lg:p-8">
             <div className="mb-6 rounded-2xl border border-border/70 bg-white/80 backdrop-blur shadow-sm">
               <div className="p-4 md:p-6">

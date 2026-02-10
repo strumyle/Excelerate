@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from '@/hooks/use-toast';
-import { Loader2, UserCheck } from 'lucide-react';
+import { Download, Loader2, UserCheck } from 'lucide-react';
 import { Test, User } from '@/lib/supabase';
 
 type AssignmentMode = 'unit' | 'csv';
@@ -60,6 +60,31 @@ export default function TestAssign() {
   useEffect(() => {
     void fetchData();
   }, []);
+
+  const getDefaultQuestionCount = (testId: string) => {
+    const test = testsById.get(testId);
+    if (!test) return null;
+    const bankSize = test.question_ids?.length || 0;
+    if (bankSize === 0) return null;
+    const preferred = test.question_count ?? bankSize;
+    return Math.min(preferred, bankSize);
+  };
+
+  useEffect(() => {
+    if (!selectedUnitTestId) return;
+    const defaultCount = getDefaultQuestionCount(selectedUnitTestId);
+    if (defaultCount !== null) {
+      setUnitQuestionCount(String(defaultCount));
+    }
+  }, [selectedUnitTestId, testsById]);
+
+  useEffect(() => {
+    if (!selectedCsvTestId) return;
+    const defaultCount = getDefaultQuestionCount(selectedCsvTestId);
+    if (defaultCount !== null) {
+      setCsvQuestionCount(String(defaultCount));
+    }
+  }, [selectedCsvTestId, testsById]);
 
   const fetchData = async () => {
     setIsLoading(true);
@@ -160,6 +185,25 @@ export default function TestAssign() {
         variant: 'destructive',
       });
     }
+  };
+
+  const downloadCsvTemplate = () => {
+    const csvTemplate = ['email', 'jane.doe@babbangona.com', 'john.smith@babbangona.com'].join('\n');
+    const blob = new Blob([csvTemplate], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', 'assign_test_template.csv');
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    toast({
+      title: 'Template downloaded',
+      description: 'Use this CSV to assign tests to individuals.',
+    });
   };
 
   const parseQuestionCount = (raw: string, available: number) => {
@@ -355,9 +399,10 @@ export default function TestAssign() {
       });
     } catch (error) {
       console.error('Error assigning unit:', error);
+      const message = error instanceof Error ? error.message : 'Failed to assign test to unit.';
       toast({
         title: 'Error',
-        description: 'Failed to assign test to unit.',
+        description: message,
         variant: 'destructive',
       });
     } finally {
@@ -458,9 +503,10 @@ export default function TestAssign() {
       });
     } catch (error) {
       console.error('Error assigning CSV:', error);
+      const message = error instanceof Error ? error.message : 'Failed to assign test from CSV.';
       toast({
         title: 'Error',
-        description: 'Failed to assign test from CSV.',
+        description: message,
         variant: 'destructive',
       });
     } finally {
@@ -591,6 +637,16 @@ export default function TestAssign() {
                 accept=".csv,text/csv"
                 onChange={(event) => handleCsvUpload(event.target.files?.[0] ?? null)}
               />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="mt-2"
+                onClick={downloadCsvTemplate}
+              >
+                <Download className="mr-2 h-4 w-4" />
+                Download CSV Template
+              </Button>
             </div>
           </div>
 

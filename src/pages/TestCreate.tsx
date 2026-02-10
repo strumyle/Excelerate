@@ -34,15 +34,18 @@ const TestCreate = () => {
   const [description, setDescription] = useState('');
   const [durationMinutes, setDurationMinutes] = useState(60);
   const [passingPercentage, setPassingPercentage] = useState(70);
-  const [groups, setGroups] = useState<string[]>([]);
   const [availableQuestions, setAvailableQuestions] = useState<Question[]>([]);
   const [selectedQuestions, setSelectedQuestions] = useState<Question[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [difficulties, setDifficulties] = useState<string[]>([]);
-  const [testType, setTestType] = useState('A');
+  const [questionsPerCandidate, setQuestionsPerCandidate] = useState(20);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const navigate = useNavigate();
+  const selectedBankSize = selectedQuestions.length;
+  const allSelected =
+    availableQuestions.length > 0 &&
+    selectedQuestions.length === availableQuestions.length;
 
   const toggleQuestion = (question: Question) => {
     if (selectedQuestions.find((q) => q.id === question.id)) {
@@ -66,6 +69,24 @@ const TestCreate = () => {
       toast({
         title: "No questions selected",
         description: "Please select at least one question.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!Number.isFinite(questionsPerCandidate) || questionsPerCandidate <= 0) {
+      toast({
+        title: "Invalid question count",
+        description: "Questions per candidate must be at least 1.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (questionsPerCandidate > selectedQuestions.length) {
+      toast({
+        title: "Question count too high",
+        description: `Select at least ${questionsPerCandidate} questions or reduce the per-candidate count.`,
         variant: "destructive",
       });
       return;
@@ -98,9 +119,8 @@ const TestCreate = () => {
           passing_percentage: passingPercentage,
           is_active: true,
           created_by: session.user.id,
-          groups: groups.length > 0 ? groups : null,
           question_ids: questionIds,
-          test_type: testType
+          question_count: questionsPerCandidate,
         })
         .select()
         .single();
@@ -119,9 +139,8 @@ const TestCreate = () => {
       setDescription('');
       setDurationMinutes(60);
       setPassingPercentage(70);
-      setGroups([]);
       setSelectedQuestions([]);
-      setTestType('A');
+      setQuestionsPerCandidate(20);
       
       // Redirect to tests page
       navigate('/tests');
@@ -169,6 +188,10 @@ const TestCreate = () => {
           new Set(processedQuestions.map(q => q.difficulty))
         );
         setDifficulties(uniqueDifficulties);
+
+        if (processedQuestions.length > 0 && questionsPerCandidate > processedQuestions.length) {
+          setQuestionsPerCandidate(processedQuestions.length);
+        }
         
       } catch (error) {
         console.error('Error fetching questions:', error);
@@ -244,33 +267,56 @@ const TestCreate = () => {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <Label htmlFor="groups">Groups (comma-separated)</Label>
+              <Label htmlFor="questionsPerCandidate">Questions per candidate</Label>
               <Input
-                id="groups"
-                placeholder="GroupA, GroupB"
-                value={groups.join(', ')}
-                onChange={(e) => setGroups(e.target.value.split(',').map(g => g.trim()))}
+                id="questionsPerCandidate"
+                type="number"
+                min={1}
+                placeholder="30"
+                value={Number.isFinite(questionsPerCandidate) ? questionsPerCandidate.toString() : ''}
+                onChange={(e) => {
+                  const next = parseInt(e.target.value, 10);
+                  setQuestionsPerCandidate(Number.isFinite(next) ? next : 0);
+                }}
               />
+              <p className="text-xs text-muted-foreground mt-1">
+                Each candidate will receive this number of random questions from the selected bank.
+              </p>
             </div>
             <div>
-              <Label htmlFor="testType">Test Type</Label>
-              <Select value={testType} onValueChange={setTestType}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select test type" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="A">Type A</SelectItem>
-                  <SelectItem value="B">Type B</SelectItem>
-                  <SelectItem value="C">Type C</SelectItem>
-                  <SelectItem value="D">Type D</SelectItem>
-                </SelectContent>
-              </Select>
+              <Label htmlFor="bankSize">Selected bank size</Label>
+              <Input
+                id="bankSize"
+                type="text"
+                value={`${selectedBankSize} question${selectedBankSize === 1 ? '' : 's'} selected`}
+                disabled
+              />
             </div>
           </div>
         </div>
 
         <div className="mt-6">
-          <h3 className="text-xl font-semibold mb-4">Select Questions</h3>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-4">
+            <div>
+              <h3 className="text-xl font-semibold">Select Questions</h3>
+              <p className="text-sm text-muted-foreground">
+                {selectedQuestions.length} of {availableQuestions.length} selected
+                {selectedBankSize > 0 && questionsPerCandidate > 0
+                  ? ` · ${Math.min(questionsPerCandidate, selectedBankSize)} questions per candidate`
+                  : ''}
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() =>
+                allSelected ? setSelectedQuestions([]) : setSelectedQuestions([...availableQuestions])
+              }
+              disabled={availableQuestions.length === 0}
+            >
+              {allSelected ? 'Clear Selection' : 'Select All'}
+            </Button>
+          </div>
           <ScrollArea className="h-[300px] w-full rounded-md border p-4">
             <div className="space-y-2">
               {availableQuestions.map((question) => (
