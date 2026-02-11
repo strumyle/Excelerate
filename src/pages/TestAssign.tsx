@@ -1,14 +1,28 @@
+
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
+import { Badge } from '@/components/ui/badge';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 import { toast } from '@/hooks/use-toast';
-import { Download, Loader2, UserCheck } from 'lucide-react';
+import { Download, Loader2, Search } from 'lucide-react';
+import { format } from 'date-fns';
 import { Test, User } from '@/lib/supabase';
 
 type AssignmentMode = 'unit' | 'csv';
+
+type AssignmentStatus = 'not_started' | 'in_progress' | 'failed' | 'submitted';
 
 interface AssignmentRow {
   id: string;
@@ -16,10 +30,23 @@ interface AssignmentRow {
   test_id: string;
   question_count: number;
   is_active: boolean;
+  available_until: string | null;
   assigned_via: string;
   source_unit: string | null;
   source_file_name: string | null;
   created_at: string;
+  updated_at?: string;
+}
+
+interface SubmissionRow {
+  id: string;
+  assignment_id: string | null;
+  status: string | null;
+  start_time: string | null;
+  end_time: string | null;
+  created_at: string | null;
+  violations_count: number | null;
+  violations: any[] | null;
 }
 
 interface AssignmentResult {
@@ -28,24 +55,38 @@ interface AssignmentResult {
   skippedStarted: number;
 }
 
+const GRACE_MINUTES = 15;
+
 export default function TestAssign() {
   const [tests, setTests] = useState<Test[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [units, setUnits] = useState<string[]>([]);
-  const [recentAssignments, setRecentAssignments] = useState<AssignmentRow[]>([]);
+  const [assignments, setAssignments] = useState<AssignmentRow[]>([]);
+  const [submissions, setSubmissions] = useState<SubmissionRow[]>([]);
+  const [retakePermissions, setRetakePermissions] = useState<Set<string>>(new Set());
 
   const [selectedUnitTestId, setSelectedUnitTestId] = useState<string>('');
   const [selectedUnit, setSelectedUnit] = useState<string>('');
   const [unitQuestionCount, setUnitQuestionCount] = useState<string>('20');
+  const [unitAvailabilityMinutes, setUnitAvailabilityMinutes] = useState<string>('1440');
 
   const [selectedCsvTestId, setSelectedCsvTestId] = useState<string>('');
   const [csvQuestionCount, setCsvQuestionCount] = useState<string>('20');
+  const [csvAvailabilityMinutes, setCsvAvailabilityMinutes] = useState<string>('1440');
   const [csvEmails, setCsvEmails] = useState<string[]>([]);
   const [csvFileName, setCsvFileName] = useState<string>('');
+
+  const [assignmentSearch, setAssignmentSearch] = useState('');
+  const [assignmentTestFilter, setAssignmentTestFilter] = useState('all');
+  const [assignmentStatusFilter, setAssignmentStatusFilter] = useState('all');
+  const [showInactive, setShowInactive] = useState(false);
 
   const [isLoading, setIsLoading] = useState(true);
   const [isAssigningUnit, setIsAssigningUnit] = useState(false);
   const [isAssigningCsv, setIsAssigningCsv] = useState(false);
+  const [isExportingAssignments, setIsExportingAssignments] = useState(false);
+  const [busyAssignmentIds, setBusyAssignmentIds] = useState<Set<string>>(new Set());
+  const [busyRetakeKeys, setBusyRetakeKeys] = useState<Set<string>>(new Set());
 
   const testsById = useMemo(
     () => new Map(tests.map((test) => [test.id, test])),
@@ -85,7 +126,6 @@ export default function TestAssign() {
       setCsvQuestionCount(String(defaultCount));
     }
   }, [selectedCsvTestId, testsById]);
-
   const fetchData = async () => {
     setIsLoading(true);
     try {
@@ -114,7 +154,7 @@ export default function TestAssign() {
       }
 
       setTests((testsData || []) as unknown as Test[]);
-      await fetchRecentAssignments();
+      await fetchAssignments();
     } catch (error) {
       console.error('Error fetching data:', error);
       toast({
@@ -127,20 +167,64 @@ export default function TestAssign() {
     }
   };
 
-  const fetchRecentAssignments = async () => {
-    const { data, error } = await supabase
-      .from('test_assignments')
-      .select('*')
-      .eq('is_active', true)
-      .order('created_at', { ascending: false })
-      .limit(60);
+  const fetchAssignments = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('test_assignments')
+        .select(
+          'id, user_id, test_id, question_count, is_active, available_until, assigned_via, source_unit, source_file_name, created_at, updated_at'
+        )
+        .order('created_at', { ascending: false })
+        .limit(500);
 
-    if (error) {
+      if (error) throw error;
+
+      const assignmentRows = (data || []) as AssignmentRow[];
+      setAssignments(assignmentRows);
+
+      const assignmentIds = assignmentRows.map((row) => row.id);
+      const userIds = Array.from(new Set(assignmentRows.map((row) => row.user_id)));
+      const testIds = Array.from(new Set(assignmentRows.map((row) => row.test_id)));
+
+      if (assignmentIds.length > 0) {
+        const { data: submissionData, error: submissionsError } = await supabase
+          .from('test_submissions')
+          .select('id, assignment_id, status, start_time, end_time, created_at, violations_count, violations')
+          .in('assignment_id', assignmentIds)
+          .order('created_at', { ascending: false });
+
+        if (submissionsError) {
+          console.error('Error fetching submissions:', submissionsError);
+          setSubmissions([]);
+        } else {
+          setSubmissions((submissionData || []) as SubmissionRow[]);
+        }
+      } else {
+        setSubmissions([]);
+      }
+
+      if (userIds.length > 0 && testIds.length > 0) {
+        const { data: retakeData, error: retakeError } = await supabase
+          .from('test_retake_permissions')
+          .select('user_id, test_id')
+          .in('user_id', userIds)
+          .in('test_id', testIds);
+
+        if (retakeError) {
+          console.error('Error fetching retake permissions:', retakeError);
+          setRetakePermissions(new Set());
+        } else {
+          const next = new Set(
+            (retakeData || []).map((row) => `${row.user_id}:${row.test_id}`)
+          );
+          setRetakePermissions(next);
+        }
+      } else {
+        setRetakePermissions(new Set());
+      }
+    } catch (error) {
       console.error('Error fetching assignments:', error);
-      return;
     }
-
-    setRecentAssignments((data || []) as AssignmentRow[]);
   };
 
   const extractEmails = (text: string) => {
@@ -219,11 +303,38 @@ export default function TestAssign() {
     };
   };
 
+  const parseAvailabilityWindow = (raw: string) => {
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isFinite(parsed) || parsed < 1) return null;
+    return parsed;
+  };
+
+  const getWindowRemainingLabel = (availableUntil: string | null) => {
+    if (!availableUntil) return 'No expiry';
+    const parsed = new Date(availableUntil);
+    if (Number.isNaN(parsed.getTime())) return 'No expiry';
+    const diffMs = parsed.getTime() - Date.now();
+    if (diffMs <= 0) return 'Expired';
+    const totalSeconds = Math.floor(diffMs / 1000);
+    const days = Math.floor(totalSeconds / 86400);
+    const hours = Math.floor((totalSeconds % 86400) / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+    if (hours > 0) return `${hours}h ${minutes}m`;
+    return `${minutes}m`;
+  };
+
+  const toCsvField = (value: string | number) => {
+    const safe = String(value).replace(/"/g, '""');
+    return `"${safe}"`;
+  };
+
   const assignToUsers = async (
     userIds: string[],
     test: Test,
     questionCount: number,
     mode: AssignmentMode,
+    availabilityWindowMinutes: number,
     metadata?: { sourceUnit?: string; sourceFileName?: string }
   ): Promise<AssignmentResult> => {
     const { data: sessionData } = await supabase.auth.getSession();
@@ -257,11 +368,13 @@ export default function TestAssign() {
     }
 
     const updateIds: string[] = [];
+    const availableUntil = new Date(Date.now() + availabilityWindowMinutes * 60 * 1000).toISOString();
     const insertRows: Array<{
       user_id: string;
       test_id: string;
       question_count: number;
       is_active: boolean;
+      available_until: string;
       assigned_by: string | null;
       assigned_via: AssignmentMode;
       source_unit: string | null;
@@ -278,6 +391,7 @@ export default function TestAssign() {
           test_id: test.id,
           question_count: questionCount,
           is_active: true,
+          available_until: availableUntil,
           assigned_by: assignedBy,
           assigned_via: mode,
           source_unit: metadata?.sourceUnit || null,
@@ -299,6 +413,7 @@ export default function TestAssign() {
         .from('test_assignments')
         .update({
           question_count: questionCount,
+          available_until: availableUntil,
           assigned_by: assignedBy,
           assigned_via: mode,
           source_unit: metadata?.sourceUnit || null,
@@ -321,7 +436,6 @@ export default function TestAssign() {
       skippedStarted,
     };
   };
-
   const handleAssignToUnit = async () => {
     if (!selectedUnitTestId || !selectedUnit) {
       toast({
@@ -353,6 +467,15 @@ export default function TestAssign() {
     }
 
     const { requested, finalCount, capped } = parseQuestionCount(unitQuestionCount, availableCount);
+    const availabilityWindow = parseAvailabilityWindow(unitAvailabilityMinutes);
+    if (!availabilityWindow) {
+      toast({
+        title: 'Invalid availability window',
+        description: 'Set availability window to at least 1 minute.',
+        variant: 'destructive',
+      });
+      return;
+    }
 
     let unitUsers = users.filter(
       (user) =>
@@ -388,10 +511,11 @@ export default function TestAssign() {
         selectedTest,
         finalCount,
         'unit',
+        availabilityWindow,
         { sourceUnit: selectedUnit }
       );
 
-      await fetchRecentAssignments();
+      await fetchAssignments();
 
       toast({
         title: 'Assignment complete',
@@ -450,6 +574,15 @@ export default function TestAssign() {
     }
 
     const { requested, finalCount, capped } = parseQuestionCount(csvQuestionCount, availableCount);
+    const availabilityWindow = parseAvailabilityWindow(csvAvailabilityMinutes);
+    if (!availabilityWindow) {
+      toast({
+        title: 'Invalid availability window',
+        description: 'Set availability window to at least 1 minute.',
+        variant: 'destructive',
+      });
+      return;
+    }
     const usersByEmail = new Map(users.map((user) => [user.email.toLowerCase(), user]));
     let matchedUsers = csvEmails
       .map((email) => usersByEmail.get(email))
@@ -492,10 +625,11 @@ export default function TestAssign() {
         selectedTest,
         finalCount,
         'csv',
+        availabilityWindow,
         { sourceFileName: csvFileName || null }
       );
 
-      await fetchRecentAssignments();
+      await fetchAssignments();
 
       toast({
         title: 'CSV assignment complete',
@@ -514,6 +648,287 @@ export default function TestAssign() {
     }
   };
 
+  const latestSubmissionByAssignment = useMemo(() => {
+    const map = new Map<string, SubmissionRow>();
+    submissions.forEach((row) => {
+      if (!row.assignment_id) return;
+      if (!map.has(row.assignment_id)) {
+        map.set(row.assignment_id, row);
+      }
+    });
+    return map;
+  }, [submissions]);
+
+  const formatDateTime = (value?: string | null) => {
+    if (!value) return 'N/A';
+    try {
+      return format(new Date(value), 'MMM d, yyyy HH:mm');
+    } catch {
+      return 'N/A';
+    }
+  };
+
+  const getStatus = (submission: SubmissionRow | undefined, test: Test | undefined): AssignmentStatus => {
+    if (!submission) return 'not_started';
+    if (submission.status === 'completed') return 'submitted';
+    if (submission.status === 'in_progress') {
+      const start = submission.start_time || submission.created_at;
+      const durationMinutes = test?.duration_minutes || 0;
+      if (start && durationMinutes > 0) {
+        const deadline =
+          new Date(start).getTime() + durationMinutes * 60 * 1000 + GRACE_MINUTES * 60 * 1000;
+        if (Date.now() > deadline) return 'failed';
+      }
+      return 'in_progress';
+    }
+    return 'not_started';
+  };
+
+  const statusLabels: Record<AssignmentStatus, string> = {
+    not_started: 'Not started',
+    in_progress: 'In progress',
+    failed: 'Failed to submit',
+    submitted: 'Submitted',
+  };
+
+  const statusStyles: Record<AssignmentStatus, string> = {
+    not_started: 'bg-slate-100 text-slate-700',
+    in_progress: 'bg-amber-100 text-amber-800',
+    failed: 'bg-red-100 text-red-700',
+    submitted: 'bg-emerald-100 text-emerald-800',
+  };
+
+  const assignmentRows = useMemo(() => {
+    return assignments.map((assignment) => {
+      const user = usersById.get(assignment.user_id);
+      const test = testsById.get(assignment.test_id);
+      const latestSubmission = latestSubmissionByAssignment.get(assignment.id);
+      const status = getStatus(latestSubmission, test);
+      const lastActivity =
+        latestSubmission?.end_time ||
+        latestSubmission?.start_time ||
+        latestSubmission?.created_at ||
+        assignment.created_at;
+      const key = `${assignment.user_id}:${assignment.test_id}`;
+      const retakeAllowed = retakePermissions.has(key);
+
+      return {
+        assignment,
+        user,
+        test,
+        status,
+        lastActivity,
+        retakeAllowed,
+      };
+    });
+  }, [assignments, usersById, testsById, latestSubmissionByAssignment, retakePermissions]);
+
+  const filteredAssignments = useMemo(() => {
+    const query = assignmentSearch.trim().toLowerCase();
+    return assignmentRows.filter((row) => {
+      if (!showInactive && !row.assignment.is_active) return false;
+      if (assignmentTestFilter !== 'all' && row.assignment.test_id !== assignmentTestFilter) {
+        return false;
+      }
+      if (assignmentStatusFilter !== 'all' && row.status !== assignmentStatusFilter) {
+        return false;
+      }
+      if (!query) return true;
+      const name = row.user?.full_name?.toLowerCase() || '';
+      const email = row.user?.email?.toLowerCase() || '';
+      return name.includes(query) || email.includes(query);
+    });
+  }, [assignmentRows, assignmentSearch, assignmentTestFilter, assignmentStatusFilter, showInactive]);
+
+  const toggleAssignmentActive = async (assignmentId: string, currentValue: boolean) => {
+    const nextValue = !currentValue;
+    setBusyAssignmentIds((prev) => new Set(prev).add(assignmentId));
+    try {
+      const { error } = await supabase
+        .from('test_assignments')
+        .update({ is_active: nextValue, updated_at: new Date().toISOString() })
+        .eq('id', assignmentId);
+
+      if (error) throw error;
+
+      setAssignments((prev) =>
+        prev.map((row) => (row.id === assignmentId ? { ...row, is_active: nextValue } : row))
+      );
+
+      toast({
+        title: nextValue ? 'Assignment reactivated' : 'Assignment withdrawn',
+        description: nextValue
+          ? 'The assessment is active again for the candidate.'
+          : 'The assessment has been withdrawn for the candidate.',
+      });
+    } catch (error) {
+      console.error('Error updating assignment:', error);
+      toast({
+        title: 'Update failed',
+        description: 'Unable to update assignment status.',
+        variant: 'destructive',
+      });
+    } finally {
+      setBusyAssignmentIds((prev) => {
+        const next = new Set(prev);
+        next.delete(assignmentId);
+        return next;
+      });
+    }
+  };
+
+  const toggleRetakePermission = async (userId: string, testId: string, currentValue: boolean) => {
+    const key = `${userId}:${testId}`;
+    setBusyRetakeKeys((prev) => new Set(prev).add(key));
+    try {
+      if (currentValue) {
+        const { error } = await supabase
+          .from('test_retake_permissions')
+          .delete()
+          .eq('user_id', userId)
+          .eq('test_id', testId);
+
+        if (error) throw error;
+
+        setRetakePermissions((prev) => {
+          const next = new Set(prev);
+          next.delete(key);
+          return next;
+        });
+
+        toast({
+          title: 'Retake removed',
+          description: 'The candidate can no longer retake this assessment.',
+        });
+      } else {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const grantedBy = sessionData.session?.user.id;
+        if (!grantedBy) throw new Error('Missing admin session.');
+
+        const { error } = await supabase
+          .from('test_retake_permissions')
+          .insert({
+            user_id: userId,
+            test_id: testId,
+            granted_by: grantedBy,
+            reason: 'Admin retake enabled',
+          });
+
+        if (error) throw error;
+
+        setRetakePermissions((prev) => new Set(prev).add(key));
+
+        toast({
+          title: 'Retake granted',
+          description: 'The candidate can retake this assessment.',
+        });
+      }
+    } catch (error) {
+      console.error('Error updating retake permission:', error);
+      toast({
+        title: 'Update failed',
+        description: 'Unable to update retake permission.',
+        variant: 'destructive',
+      });
+    } finally {
+      setBusyRetakeKeys((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
+  };
+
+  const downloadAssignmentsCsv = () => {
+    if (filteredAssignments.length === 0) {
+      toast({
+        title: 'No rows to export',
+        description: 'Adjust filters or assign tests before exporting.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setIsExportingAssignments(true);
+    try {
+      const headers = [
+        'S/N',
+        'Staff Name',
+        'Email',
+        'Assessment',
+        'Date Assigned',
+        'Status',
+        'Participation',
+        'Last Activity',
+        'Available Until',
+        'Window Remaining',
+        'Assignment Active',
+      ];
+
+      const participationMap: Record<AssignmentStatus, string> = {
+        not_started: 'Yet to start',
+        in_progress: 'Started',
+        failed: 'Failed to submit',
+        submitted: 'Taken',
+      };
+
+      const rows = filteredAssignments.map((row, index) => {
+        const availableUntil = row.assignment.available_until;
+        return [
+          index + 1,
+          row.user?.full_name || 'Unknown',
+          row.user?.email || row.assignment.user_id,
+          row.test?.title || 'Unknown Test',
+          formatDateTime(row.assignment.created_at),
+          statusLabels[row.status],
+          participationMap[row.status],
+          formatDateTime(row.lastActivity),
+          formatDateTime(availableUntil),
+          getWindowRemainingLabel(availableUntil),
+          row.assignment.is_active ? 'Yes' : 'No',
+        ]
+          .map((value) => toCsvField(value))
+          .join(',');
+      });
+
+      const csvContent = `${headers.join(',')}\n${rows.join('\n')}`;
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      const testName =
+        assignmentTestFilter !== 'all'
+          ? testsById.get(assignmentTestFilter)?.title || 'filtered'
+          : 'all-tests';
+      const safeTestName = testName
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+      link.setAttribute('href', url);
+      link.setAttribute(
+        'download',
+        `assigned-assessments-${safeTestName}-${format(new Date(), 'yyyy-MM-dd')}.csv`
+      );
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      toast({
+        title: 'Export complete',
+        description: `Downloaded ${filteredAssignments.length} filtered assignment rows.`,
+      });
+    } catch (error) {
+      console.error('Error exporting assignments CSV:', error);
+      toast({
+        title: 'Export failed',
+        description: 'Unable to export assignment status.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsExportingAssignments(false);
+    }
+  };
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -524,20 +939,20 @@ export default function TestAssign() {
   }
 
   return (
-    <div className="container mx-auto py-8">
-      <h1 className="text-3xl font-bold mb-6">Assign Tests</h1>
+    <div className="container mx-auto py-8 space-y-8">
+      <h1 className="text-3xl font-bold">Assign Tests</h1>
       {tests.length === 0 && (
-        <p className="text-sm text-muted-foreground mb-6">
+        <p className="text-sm text-muted-foreground">
           No tests found. Create a test first.
         </p>
       )}
 
-      <Card className="mb-8">
+      <Card>
         <CardHeader>
           <CardTitle>Assign Test to Unit</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
             <div className="md:col-span-2">
               <label className="text-sm font-medium mb-2 block">Select Test</label>
               <Select value={selectedUnitTestId} onValueChange={setSelectedUnitTestId}>
@@ -579,6 +994,15 @@ export default function TestAssign() {
                 onChange={(event) => setUnitQuestionCount(event.target.value)}
               />
             </div>
+            <div>
+              <label className="text-sm font-medium mb-2 block">Availability Window (minutes)</label>
+              <Input
+                type="number"
+                min={1}
+                value={unitAvailabilityMinutes}
+                onChange={(event) => setUnitAvailabilityMinutes(event.target.value)}
+              />
+            </div>
           </div>
 
           <Button
@@ -598,12 +1022,12 @@ export default function TestAssign() {
         </CardContent>
       </Card>
 
-      <Card className="mb-8">
+      <Card>
         <CardHeader>
           <CardTitle>Assign Test to Individuals (CSV)</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
             <div className="md:col-span-2">
               <label className="text-sm font-medium mb-2 block">Select Test</label>
               <Select value={selectedCsvTestId} onValueChange={setSelectedCsvTestId}>
@@ -648,6 +1072,15 @@ export default function TestAssign() {
                 Download CSV Template
               </Button>
             </div>
+            <div>
+              <label className="text-sm font-medium mb-2 block">Availability Window (minutes)</label>
+              <Input
+                type="number"
+                min={1}
+                value={csvAvailabilityMinutes}
+                onChange={(event) => setCsvAvailabilityMinutes(event.target.value)}
+              />
+            </div>
           </div>
 
           {csvFileName && (
@@ -673,53 +1106,155 @@ export default function TestAssign() {
         </CardContent>
       </Card>
 
-      <h2 className="text-2xl font-bold mb-4">Recent Active Assignments</h2>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {recentAssignments.map((assignment) => {
-          const test = testsById.get(assignment.test_id);
-          const user = usersById.get(assignment.user_id);
-
-          return (
-            <Card key={assignment.id}>
-              <CardHeader>
-                <CardTitle className="text-base flex items-center gap-2">
-                  <UserCheck className="h-4 w-4 text-green-600" />
-                  {test?.title || 'Unknown Test'}
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2 text-sm">
-                <div>
-                  <span className="text-muted-foreground">Candidate:</span>{' '}
-                  {user?.full_name || user?.email || assignment.user_id}
-                </div>
-                <div>
-                  <span className="text-muted-foreground">Question Count:</span>{' '}
-                  {assignment.question_count}
-                </div>
-                <div>
-                  <span className="text-muted-foreground">Assigned Via:</span>{' '}
-                  {assignment.assigned_via}
-                </div>
-                {assignment.source_unit && (
-                  <div>
-                    <span className="text-muted-foreground">Unit:</span> {assignment.source_unit}
-                  </div>
-                )}
-                {assignment.source_file_name && (
-                  <div>
-                    <span className="text-muted-foreground">CSV:</span> {assignment.source_file_name}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          );
-        })}
-        {recentAssignments.length === 0 && (
-          <div className="col-span-full text-gray-500 text-center py-4">
-            No active assignments found.
+      <Card>
+        <CardHeader>
+          <CardTitle>Assigned Assessments</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-col lg:flex-row lg:items-center gap-3">
+            <div className="relative flex-1">
+              <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Search staff by name or email..."
+                className="pl-8"
+                value={assignmentSearch}
+                onChange={(event) => setAssignmentSearch(event.target.value)}
+              />
+            </div>
+            <Select value={assignmentTestFilter} onValueChange={setAssignmentTestFilter}>
+              <SelectTrigger className="w-full lg:w-[220px]">
+                <SelectValue placeholder="Filter by test" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All tests</SelectItem>
+                {tests.map((test) => (
+                  <SelectItem key={test.id} value={test.id}>
+                    {test.title}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={assignmentStatusFilter} onValueChange={setAssignmentStatusFilter}>
+              <SelectTrigger className="w-full lg:w-[200px]">
+                <SelectValue placeholder="Filter by status" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All statuses</SelectItem>
+                <SelectItem value="not_started">Not started</SelectItem>
+                <SelectItem value="in_progress">In progress</SelectItem>
+                <SelectItem value="failed">Failed to submit</SelectItem>
+                <SelectItem value="submitted">Submitted</SelectItem>
+              </SelectContent>
+            </Select>
+            <div className="flex items-center gap-2 text-sm">
+              <Switch checked={showInactive} onCheckedChange={setShowInactive} />
+              <span>Show inactive</span>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={downloadAssignmentsCsv}
+              disabled={isExportingAssignments || filteredAssignments.length === 0}
+              className="w-full lg:w-auto"
+            >
+              {isExportingAssignments ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Exporting...
+                </>
+              ) : (
+                <>
+                  <Download className="mr-2 h-4 w-4" />
+                  Download Status
+                </>
+              )}
+            </Button>
           </div>
-        )}
-      </div>
+
+          {filteredAssignments.length === 0 ? (
+            <div className="text-center text-muted-foreground py-8">
+              No assignments found.
+            </div>
+          ) : (
+            <div className="border rounded-md overflow-hidden">
+              <div className="max-h-[520px] overflow-y-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-[60px]">#</TableHead>
+                      <TableHead>Staff</TableHead>
+                      <TableHead>Test</TableHead>
+                      <TableHead>Date Assigned</TableHead>
+                      <TableHead>Available Until</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Last Activity</TableHead>
+                      <TableHead>Withdraw</TableHead>
+                      <TableHead>Allow Retake</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filteredAssignments.map((row, index) => {
+                      const assignment = row.assignment;
+                      const user = row.user;
+                      const test = row.test;
+                      const statusLabel = statusLabels[row.status];
+                      const statusClass = statusStyles[row.status];
+                      const withdrawBusy = busyAssignmentIds.has(assignment.id);
+                      const retakeKey = `${assignment.user_id}:${assignment.test_id}`;
+                      const retakeBusy = busyRetakeKeys.has(retakeKey);
+                      return (
+                        <TableRow key={assignment.id}>
+                          <TableCell>{index + 1}</TableCell>
+                          <TableCell>
+                            <div className="font-medium">{user?.full_name || 'Unknown'}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {user?.email || assignment.user_id}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="font-medium">{test?.title || 'Unknown Test'}</div>
+                            {!assignment.is_active && (
+                              <div className="text-xs text-muted-foreground">Inactive</div>
+                            )}
+                          </TableCell>
+                          <TableCell>{formatDateTime(assignment.created_at)}</TableCell>
+                          <TableCell>{formatDateTime(assignment.available_until)}</TableCell>
+                          <TableCell>
+                            <Badge className={statusClass}>{statusLabel}</Badge>
+                          </TableCell>
+                          <TableCell>{formatDateTime(row.lastActivity)}</TableCell>
+                          <TableCell>
+                            <Switch
+                              checked={!assignment.is_active}
+                              onCheckedChange={() =>
+                                toggleAssignmentActive(assignment.id, assignment.is_active)
+                              }
+                              disabled={withdrawBusy}
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Switch
+                              checked={row.retakeAllowed}
+                              onCheckedChange={() =>
+                                toggleRetakePermission(
+                                  assignment.user_id,
+                                  assignment.test_id,
+                                  row.retakeAllowed
+                                )
+                              }
+                              disabled={retakeBusy}
+                            />
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

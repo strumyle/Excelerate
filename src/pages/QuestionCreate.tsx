@@ -25,11 +25,13 @@ const QuestionCreate = () => {
     category: '',
     difficulty: 'Medium',
     points: 5,
-    test_type: 'A', // Default test type
+    test_type: '', // Assessment bucket
   });
   
   const [categories, setCategories] = useState<string[]>([]);
   const [newCategory, setNewCategory] = useState('');
+  const [buckets, setBuckets] = useState<string[]>([]);
+  const [newBucket, setNewBucket] = useState('');
   
   // Fetch existing categories
   useEffect(() => {
@@ -38,7 +40,7 @@ const QuestionCreate = () => {
         console.log('Fetching categories...');
         const { data, error } = await supabase
           .from('questions')
-          .select('category')
+          .select('category, test_type')
           .order('category');
           
         if (error) {
@@ -50,9 +52,18 @@ const QuestionCreate = () => {
         const uniqueCategories = Array.from(
           new Set(data.map((item: any) => item.category))
         ).filter(Boolean);
+
+        const uniqueBuckets = Array.from(
+          new Set(data.map((item: any) => item.test_type || 'Unassigned'))
+        );
         
         console.log('Unique categories:', uniqueCategories);
         setCategories(uniqueCategories as string[]);
+        setBuckets(uniqueBuckets as string[]);
+
+        if (!question.test_type && uniqueBuckets.length > 0) {
+          setQuestion((prev) => ({ ...prev, test_type: uniqueBuckets[0] }));
+        }
       } catch (error) {
         console.error('Error in fetchCategories:', error);
         toast({
@@ -88,7 +99,7 @@ const QuestionCreate = () => {
           if (data) {
             setQuestion({
               ...data,
-              test_type: data.test_type || 'A' // Ensure test_type has default
+              test_type: data.test_type || '' // Ensure bucket has default
             });
           }
         } catch (error) {
@@ -149,6 +160,15 @@ const QuestionCreate = () => {
       setCategories([...categories, newCategory]);
       setQuestion({ ...question, category: newCategory });
       setNewCategory('');
+    }
+  };
+
+  const handleBucketAdd = () => {
+    const trimmed = newBucket.trim();
+    if (trimmed && !buckets.includes(trimmed)) {
+      setBuckets([...buckets, trimmed]);
+      setQuestion({ ...question, test_type: trimmed });
+      setNewBucket('');
     }
   };
   
@@ -381,21 +401,40 @@ const QuestionCreate = () => {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="test-type">Test Type</Label>
+                <Label htmlFor="test-type">Assessment Bucket</Label>
                 <Select
                   value={question.test_type}
                   onValueChange={(value) => setQuestion({ ...question, test_type: value })}
                 >
                   <SelectTrigger>
-                    <SelectValue placeholder="Select test type" />
+                    <SelectValue placeholder="Select assessment bucket" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="A">Type A</SelectItem>
-                    <SelectItem value="B">Type B</SelectItem>
-                    <SelectItem value="C">Type C</SelectItem>
-                    <SelectItem value="D">Type D</SelectItem>
+                    {buckets.map((bucketOption) => (
+                      <SelectItem key={bucketOption} value={bucketOption}>
+                        {bucketOption}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
+              </div>
+              
+              <div className="space-y-2 md:col-span-2">
+                <Label>New Assessment Bucket</Label>
+                <div className="flex gap-2">
+                  <Input
+                    value={newBucket}
+                    onChange={(e) => setNewBucket(e.target.value)}
+                    placeholder="Enter new bucket name"
+                  />
+                  <Button 
+                    type="button"
+                    onClick={handleBucketAdd}
+                    disabled={!newBucket.trim() || buckets.includes(newBucket.trim())}
+                  >
+                    Add
+                  </Button>
+                </div>
               </div>
               
               <div className="space-y-2 md:col-span-2">

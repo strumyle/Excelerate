@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
@@ -39,6 +39,10 @@ export function ExamInterface({
   const [testData, setTestData] = useState<any>(null);
   const [violations, setViolations] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const lastSavedRef = useRef<string>('');
+  const localSaveTimerRef = useRef<number | null>(null);
+  const startTimeRef = useRef<number | null>(null);
+  const durationSecondsRef = useRef<number>(0);
 
   const { toast } = useToast();
   const navigate = useNavigate();
@@ -52,6 +56,68 @@ export function ExamInterface({
       .join('')
       .toUpperCase()
       .substring(0, 2);
+  };
+
+  const getStorageKey = () => (submissionId ? `exam_progress_${submissionId}` : 'exam_progress');
+
+  const readLocalProgress = () => {
+    if (!submissionId) return null;
+    try {
+      const raw = localStorage.getItem(getStorageKey());
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const writeLocalProgress = (payload: { answers: AnswerRecord; currentQuestionIndex: number }) => {
+    if (!submissionId) return;
+    try {
+      localStorage.setItem(getStorageKey(), JSON.stringify(payload));
+    } catch {
+      // Ignore local storage failures
+    }
+  };
+
+  const clearLocalProgress = () => {
+    if (!submissionId) return;
+    try {
+      localStorage.removeItem(getStorageKey());
+    } catch {
+      // Ignore local storage failures
+    }
+  };
+
+  const normalizeAnswers = (input: unknown, validIds: string[]) => {
+    const normalized: AnswerRecord = {};
+    validIds.forEach((id) => {
+      normalized[id] = '';
+    });
+
+    if (input && typeof input === 'object') {
+      Object.entries(input as Record<string, unknown>).forEach(([key, value]) => {
+        if (!validIds.includes(key)) return;
+        normalized[key] = typeof value === 'string' ? value : '';
+      });
+    }
+
+    return normalized;
+  };
+
+  const saveProgressToCloud = async (payload: AnswerRecord, force = false) => {
+    if (!submissionId) return;
+    const snapshot = JSON.stringify(payload);
+    if (!force && snapshot === lastSavedRef.current) return;
+
+    const { error } = await supabase
+      .from('test_submissions')
+      .update({ answers: payload })
+      .eq('id', submissionId);
+
+    if (error) {
+      throw error;
+    }
+    lastSavedRef.current = snapshot;
   };
 
   useEffect(() => {
@@ -72,7 +138,11 @@ export function ExamInterface({
         const [{ data: test, error: testError }, { data: submissionRow, error: submissionError }] =
           await Promise.all([
             supabase.from('tests').select('*').eq('id', testId).single(),
-            supabase.from('test_submissions').select('question_ids').eq('id', submissionId).single(),
+            supabase
+              .from('test_submissions')
+              .select('question_ids, answers, start_time')
+              .eq('id', submissionId)
+              .single(),
           ]);
 
         if (testError || !test) {
@@ -84,7 +154,13 @@ export function ExamInterface({
         }
 
         setTestData(test);
-        setTimeRemaining(test.duration_minutes * 60);
+        const startTime = submissionRow.start_time ? new Date(submissionRow.start_time).getTime() : Date.now();
+        const durationSeconds = Math.max(0, Math.floor(test.duration_minutes * 60));
+        const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startTime) / 1000));
+        const remainingSeconds = Math.max(0, durationSeconds - elapsedSeconds);
+        startTimeRef.current = startTime;
+        durationSecondsRef.current = durationSeconds;
+        setTimeRemaining(remainingSeconds);
 
         const lockedQuestionIds =
           ((submissionRow.question_ids as string[] | null) || propQuestionIds || []).filter(Boolean);
@@ -137,11 +213,27 @@ export function ExamInterface({
 
         setQuestions(questionsWithShuffledOptions);
 
-        const initialAnswers: AnswerRecord = {};
-        questionsWithShuffledOptions.forEach((question) => {
-          initialAnswers[question.id] = '';
-        });
-        setAnswers(initialAnswers);
+        const questionIds = questionsWithShuffledOptions.map((question) => question.id);
+        const serverAnswers = normalizeAnswers(submissionRow.answers, questionIds);
+        const localProgress = readLocalProgress();
+        const mergedAnswers = normalizeAnswers(serverAnswers, questionIds);
+
+        if (localProgress?.answers) {
+          Object.entries(localProgress.answers as AnswerRecord).forEach(([key, value]) => {
+            if (questionIds.includes(key) && typeof value === 'string') {
+              mergedAnswers[key] = value;
+            }
+          });
+        }
+
+        setAnswers(mergedAnswers);
+        if (localProgress?.currentQuestionIndex !== undefined) {
+          const desiredIndex = Number(localProgress.currentQuestionIndex);
+          if (Number.isFinite(desiredIndex)) {
+            const clampedIndex = Math.max(0, Math.min(questionsWithShuffledOptions.length - 1, desiredIndex));
+            setCurrentQuestionIndex(clampedIndex);
+          }
+        }
       } catch (error: any) {
         console.error('Error initializing test:', error);
         toast({
@@ -234,21 +326,99 @@ export function ExamInterface({
   }, [loading, submissionId, navigate, toast]);
 
   useEffect(() => {
-    if (loading || timeRemaining <= 0 || !isFullscreen) return;
-
-    const timer = setInterval(() => {
-      setTimeRemaining((prevTime) => {
-        if (prevTime <= 1) {
-          clearInterval(timer);
-          void handleSubmit(true);
-          return 0;
-        }
-        return prevTime - 1;
+    if (!submissionId || loading) return;
+    if (localSaveTimerRef.current) {
+      clearTimeout(localSaveTimerRef.current);
+    }
+    const questionIds = questions.map((question) => question.id);
+    const payload = normalizeAnswers(answers, questionIds);
+    localSaveTimerRef.current = window.setTimeout(() => {
+      writeLocalProgress({
+        answers: payload,
+        currentQuestionIndex,
       });
+    }, 300);
+
+    return () => {
+      if (localSaveTimerRef.current) {
+        clearTimeout(localSaveTimerRef.current);
+      }
+    };
+  }, [answers, currentQuestionIndex, questions, submissionId, loading]);
+
+  useEffect(() => {
+    if (!submissionId || loading) return;
+    const intervalId = window.setInterval(() => {
+      const questionIds = questions.map((question) => question.id);
+      const payload = normalizeAnswers(answers, questionIds);
+      saveProgressToCloud(payload).catch((error) => {
+        console.error('Autosave failed:', error);
+      });
+    }, 15000);
+
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, [answers, questions, submissionId, loading]);
+
+  useEffect(() => {
+    if (!submissionId) return;
+    const handleVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        const questionIds = questions.map((question) => question.id);
+        const payload = normalizeAnswers(answers, questionIds);
+        writeLocalProgress({
+          answers: payload,
+          currentQuestionIndex,
+        });
+        saveProgressToCloud(payload, true).catch((error) => {
+          console.error('Visibility save failed:', error);
+        });
+      }
+    };
+
+    const handlePageHide = () => {
+      const questionIds = questions.map((question) => question.id);
+      const payload = normalizeAnswers(answers, questionIds);
+      writeLocalProgress({
+        answers: payload,
+        currentQuestionIndex,
+      });
+      saveProgressToCloud(payload, true).catch((error) => {
+        console.error('Page hide save failed:', error);
+      });
+    };
+
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('pagehide', handlePageHide);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('pagehide', handlePageHide);
+    };
+  }, [answers, questions, currentQuestionIndex, submissionId]);
+
+  useEffect(() => {
+    if (loading || !submissionId) return;
+    if (!startTimeRef.current || durationSecondsRef.current <= 0) return;
+
+    const timer = window.setInterval(() => {
+      const startTime = startTimeRef.current;
+      const durationSeconds = durationSecondsRef.current;
+      if (!startTime || durationSeconds <= 0) return;
+
+      const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startTime) / 1000));
+      const remainingSeconds = Math.max(0, durationSeconds - elapsedSeconds);
+      setTimeRemaining(remainingSeconds);
+
+      if (remainingSeconds <= 0) {
+        window.clearInterval(timer);
+        void handleSubmit(true);
+      }
     }, 1000);
 
-    return () => clearInterval(timer);
-  }, [loading, timeRemaining]);
+    return () => window.clearInterval(timer);
+  }, [loading, submissionId]);
 
   const handleAnswer = (questionId: string, answer: string) => {
     setAnswers((prev) => ({
@@ -272,9 +442,15 @@ export function ExamInterface({
   const gradeOnServer = async (isAutoSubmit: boolean) => {
     const { data: session } = await supabase.auth.getSession();
     const token = session.session?.access_token;
+    const questionIds = questions.map((question) => question.id);
+    const payloadAnswers = normalizeAnswers(answers, questionIds);
 
     if (!token) {
       throw new Error('Not authenticated');
+    }
+
+    if (!testId) {
+      throw new Error('Missing test context.');
     }
 
     const response = await fetch(
@@ -287,9 +463,14 @@ export function ExamInterface({
         },
         body: JSON.stringify({
           submissionId,
-          answers,
+          submission_id: submissionId,
+          testId,
+          test_id: testId,
+          answers: payloadAnswers,
           violations,
+          violations_count: violations,
           autoSubmit: isAutoSubmit,
+          auto_submit: isAutoSubmit,
         }),
       }
     );
@@ -314,6 +495,7 @@ export function ExamInterface({
         throw new Error('Grading failed');
       }
 
+      clearLocalProgress();
       toast({
         title: isAutoSubmit ? "Time's up!" : 'Test submitted',
         description: `Your answers have been recorded. Score: ${result.percentageScore.toFixed(1)}%`,

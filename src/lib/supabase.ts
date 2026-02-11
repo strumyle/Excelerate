@@ -253,6 +253,7 @@ export interface TestAssignment {
   test_id: string;
   question_count: number;
   is_active: boolean;
+  available_until?: string | null;
   assigned_by?: string | null;
   assigned_via: 'unit' | 'csv' | 'migration' | 'manual';
   source_unit?: string | null;

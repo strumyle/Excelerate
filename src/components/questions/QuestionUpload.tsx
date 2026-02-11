@@ -29,9 +29,9 @@ export function QuestionUpload() {
 
   // CSV Template content
   const csvTemplate = `text,option_a,option_b,option_c,option_d,correct_answer,category,difficulty,test_type,points
-"What is the keyboard shortcut to copy cells in Excel?","Ctrl+C","Ctrl+V","Ctrl+X","Ctrl+Z","Ctrl+C","Shortcuts","Easy","Excel",5
-"Which function returns the average of a range?","SUM","AVERAGE","COUNT","MAX","AVERAGE","Functions","Easy","Excel",5
-"What does the VLOOKUP function do?","Counts cells","Looks up values vertically","Sums values","Finds maximum","Looks up values vertically","Functions","Medium","Excel",10`;
+"What is the keyboard shortcut to copy cells in Excel?","Ctrl+C","Ctrl+V","Ctrl+X","Ctrl+Z","Ctrl+C","Shortcuts","Easy","Assessment 1",5
+"Which function returns the average of a range?","SUM","AVERAGE","COUNT","MAX","AVERAGE","Functions","Easy","Assessment 1",5
+"What does the VLOOKUP function do?","Counts cells","Looks up values vertically","Sums values","Finds maximum","Looks up values vertically","Functions","Medium","Assessment 1",10`;
 
   const downloadCsvTemplate = () => {
     const blob = new Blob([csvTemplate], { type: 'text/csv;charset=utf-8;' });
@@ -122,7 +122,7 @@ export function QuestionUpload() {
           correct_answer: rowData.correct_answer,
           category: rowData.category || 'General',
           difficulty: rowData.difficulty || 'Medium',
-          test_type: rowData.test_type || 'Excel',
+          test_type: rowData.test_type || 'General',
           points: parseInt(rowData.points) || 5
         });
       } catch (err) {
@@ -269,7 +269,7 @@ export function QuestionUpload() {
           correct_answer: q.correct_answer,
           category: q.category,
           difficulty: q.difficulty || 'Medium',
-          test_type: q.test_type || 'Excel',
+          test_type: q.test_type || 'General',
           points: q.points || 5,
         }));
       } else {
@@ -370,7 +370,7 @@ export function QuestionUpload() {
         category: q.category,
         difficulty: q.difficulty || 'Medium',
         points: q.points || 5,
-        test_type: q.test_type || 'Excel',
+        test_type: q.test_type || 'General',
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       }));
@@ -411,7 +411,7 @@ export function QuestionUpload() {
       "correct_answer": "MAX",
       "category": "Functions",
       "difficulty": "Easy",
-      "test_type": "Excel",
+      "test_type": "Assessment 1",
       "points": 5
     }
   ], null, 2);
@@ -483,7 +483,7 @@ export function QuestionUpload() {
                   <div className="font-medium mb-2">Validation errors found:</div>
                   <ul className="text-sm space-y-1 max-h-32 overflow-auto">
                     {parseErrors.slice(0, 5).map((error, i) => (
-                      <li key={i}>• {error}</li>
+                      <li key={i}>- {error}</li>
                     ))}
                     {parseErrors.length > 5 && (
                       <li>...and {parseErrors.length - 5} more errors</li>
@@ -506,7 +506,7 @@ export function QuestionUpload() {
                   <div><span className="font-mono bg-secondary px-1 rounded">correct_answer</span> - Must match an option (required)</div>
                   <div><span className="font-mono bg-secondary px-1 rounded">category</span> - e.g., Functions, Shortcuts (required)</div>
                   <div><span className="font-mono bg-secondary px-1 rounded">difficulty</span> - Easy, Medium, Hard (required)</div>
-                  <div><span className="font-mono bg-secondary px-1 rounded">test_type</span> - e.g., Excel (optional)</div>
+                  <div><span className="font-mono bg-secondary px-1 rounded">test_type</span> - e.g., Assessment 1 (optional)</div>
                   <div><span className="font-mono bg-secondary px-1 rounded">points</span> - Point value (optional, default: 5)</div>
                 </div>
               </div>

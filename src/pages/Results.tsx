@@ -1,13 +1,15 @@
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { TableHead, TableRow, TableHeader, TableCell, TableBody, Table } from '@/components/ui/table';
+import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { supabase } from '@/integrations/supabase/client';
 import { TestSubmission } from '@/lib/supabase';
 import { format } from 'date-fns';
 import { Badge } from '@/components/ui/badge';
-import { AlertTriangle, CheckCircle, Loader2, FileDown, Eye, EyeOff, Users, TrendingUp } from 'lucide-react';
+import { AlertTriangle, CheckCircle, Loader2, FileDown, Eye, EyeOff, Users, TrendingUp, Search } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useNavigate } from 'react-router-dom';
 import { useToast } from '@/components/ui/use-toast';
@@ -25,8 +27,11 @@ interface EnhancedTestSubmission extends Omit<TestSubmission, 'test'> {
     title: string;
     passing_percentage: number;
     results_released: boolean;
+    test_type: string | null;
   };
   violations_count: number;
+  attempt_number?: number;
+  attempt_count?: number;
 }
 
 interface UnitPerformance {
@@ -46,6 +51,16 @@ interface RecentActivity {
   passed: boolean;
 }
 
+function formatDateTimeValue(
+  value: string | null | undefined,
+  pattern = 'MMM d, yyyy HH:mm'
+) {
+  if (!value) return 'N/A';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return 'N/A';
+  return format(parsed, pattern);
+}
+
 export default function Results() {
   const [submissions, setSubmissions] = useState<EnhancedTestSubmission[]>([]);
   const [unitPerformance, setUnitPerformance] = useState<UnitPerformance[]>([]);
@@ -54,6 +69,10 @@ export default function Results() {
   const [userRole, setUserRole] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
   const [releasingAll, setReleasingAll] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedTestId, setSelectedTestId] = useState('all');
+  const [selectedSubject, setSelectedSubject] = useState('all');
+  const [activeTab, setActiveTab] = useState('all');
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -80,105 +99,116 @@ export default function Results() {
 
         console.log("User role:", userData?.role);
 
-        if (userData?.role === 'admin') {
-          console.log("Fetching submissions as admin");
-          
-          const { data, error } = await supabase
-            .from('test_submissions')
-            .select('*')
-            .order('created_at', { ascending: false });
-            
-          if (error) {
-            console.error("Error fetching submissions as admin:", error);
-            throw new Error(error.message);
-          }
+        const isAdmin = userData?.role === 'admin';
+        const baseQuery = supabase
+          .from('test_submissions')
+          .select(
+            'id, assignment_id, test_id, user_id, start_time, end_time, created_at, score, passed, status, violations_count, violations, auto_submit'
+          )
+          .eq('status', 'completed')
+          .not('score', 'is', null)
+          .order('created_at', { ascending: false });
 
-          console.log("Admin submissions fetched:", data);
-          
-          const processedSubmissions = await Promise.all(
-            (data || []).map(async (submission) => {
-              let userData = null;
-              if (submission.user_id) {
-                const { data: user } = await supabase
+        if (!isAdmin) {
+          baseQuery.eq('user_id', sessionData.session.user.id);
+        }
+
+        const { data, error } = await baseQuery;
+
+        if (error) {
+          console.error('Error fetching submissions:', error);
+          throw new Error(error.message);
+        }
+
+        const rawSubmissions = data || [];
+        const testIds = Array.from(
+          new Set(rawSubmissions.map((submission) => submission.test_id).filter(Boolean))
+        ) as string[];
+        const userIds = Array.from(
+          new Set(rawSubmissions.map((submission) => submission.user_id).filter(Boolean))
+        ) as string[];
+
+        const [{ data: testsData, error: testsError }, { data: usersData, error: usersError }] =
+          await Promise.all([
+            testIds.length > 0
+              ? supabase
+                  .from('tests')
+                  .select('id, title, passing_percentage, results_released, test_type')
+                  .in('id', testIds)
+              : Promise.resolve({ data: [], error: null }),
+            userIds.length > 0
+              ? supabase
                   .from('users')
                   .select('id, full_name, email, unit')
-                  .eq('id', submission.user_id)
-                  .single();
-                userData = user;
-              }
-              
-              let testData = null;
-              if (submission.test_id) {
-                const { data: test } = await supabase
-                  .from('tests')
-                  .select('id, title, passing_percentage, results_released')
-                  .eq('id', submission.test_id)
-                  .single();
-                testData = test;
-              }
-              
-              return {
-                ...submission,
-                user: userData,
-                test: testData,
-                violations_count:
-                  submission.violations_count ??
-                  (submission.violations ? submission.violations.length : 0),
-              };
-            })
-          );
-          
-          setSubmissions(processedSubmissions as EnhancedTestSubmission[]);
-          
-          // Calculate unit performance
-          const unitStats = calculateUnitPerformance(processedSubmissions as EnhancedTestSubmission[]);
-          setUnitPerformance(unitStats);
-          
-          // Calculate recent activity
-          const activity = calculateRecentActivity(processedSubmissions as EnhancedTestSubmission[]);
-          setRecentActivity(activity);
-          
-        } else {
-          console.log("Fetching submissions for user:", sessionData.session.user.id);
-          
-          const { data, error } = await supabase
-            .from('test_submissions')
-            .select('*')
-            .eq('user_id', sessionData.session.user.id)
-            .order('created_at', { ascending: false });
-            
-          if (error) {
-            console.error("Error fetching user submissions:", error);
-            throw new Error(error.message);
-          }
+                  .in('id', userIds)
+              : Promise.resolve({ data: [], error: null }),
+          ]);
 
-          console.log("User submissions fetched:", data);
-          
-          const processedSubmissions = await Promise.all(
-            (data || []).map(async (submission) => {
-              let testData = null;
-              if (submission.test_id) {
-                const { data: test } = await supabase
-                  .from('tests')
-                  .select('id, title, passing_percentage, results_released')
-                  .eq('id', submission.test_id)
-                  .single();
-                testData = test;
-              }
-              
-              return {
-                ...submission,
-                test: testData,
-                violations_count:
-                  submission.violations_count ??
-                  (submission.violations ? submission.violations.length : 0),
-              };
-            })
-          );
-          
-          // For non-admin users, only show released results
-          const releasedSubmissions = processedSubmissions.filter(s => s.test?.results_released);
-          setSubmissions(releasedSubmissions as EnhancedTestSubmission[]);
+        if (testsError) {
+          console.error('Error fetching tests:', testsError);
+        }
+        if (usersError) {
+          console.error('Error fetching users:', usersError);
+        }
+
+        const testsById = new Map((testsData || []).map((test) => [test.id, test]));
+        const usersById = new Map((usersData || []).map((user) => [user.id, user]));
+
+        const processedSubmissions = rawSubmissions.map((submission) => ({
+          ...submission,
+          user: submission.user_id ? usersById.get(submission.user_id) : undefined,
+          test: submission.test_id ? testsById.get(submission.test_id) : undefined,
+          violations_count:
+            submission.violations_count ??
+            (submission.violations ? submission.violations.length : 0),
+        }));
+
+        const releasedSubmissions = isAdmin
+          ? processedSubmissions
+          : processedSubmissions.filter((submission) => submission.test?.results_released);
+
+        const attemptOrderMap = new Map<string, string[]>();
+        const sortedForAttempts = [...releasedSubmissions].sort((a, b) => {
+          const aTime = a.start_time || a.created_at || '';
+          const bTime = b.start_time || b.created_at || '';
+          return new Date(aTime).getTime() - new Date(bTime).getTime();
+        });
+
+        sortedForAttempts.forEach((submission) => {
+          if (!submission.user_id || !submission.test_id) return;
+          const key = `${submission.user_id}:${submission.test_id}`;
+          if (!attemptOrderMap.has(key)) {
+            attemptOrderMap.set(key, []);
+          }
+          attemptOrderMap.get(key)?.push(submission.id);
+        });
+
+        const attemptLookup = new Map<string, { attempt: number; total: number }>();
+        attemptOrderMap.forEach((ids) => {
+          ids.forEach((id, index) => {
+            attemptLookup.set(id, { attempt: index + 1, total: ids.length });
+          });
+        });
+
+        const submissionsWithAttempts = releasedSubmissions.map((submission) => {
+          const attemptInfo = attemptLookup.get(submission.id);
+          return {
+            ...submission,
+            attempt_number: attemptInfo?.attempt || 1,
+            attempt_count: attemptInfo?.total || 1,
+          };
+        }) as EnhancedTestSubmission[];
+
+        setSubmissions(submissionsWithAttempts);
+
+        if (isAdmin) {
+          const unitStats = calculateUnitPerformance(submissionsWithAttempts);
+          setUnitPerformance(unitStats);
+          const activity = calculateRecentActivity(submissionsWithAttempts);
+          setRecentActivity(activity);
+        } else {
+          setUnitPerformance([]);
+          setRecentActivity([]);
         }
       } catch (err) {
         console.error('Error fetching submissions:', err);
@@ -230,10 +260,17 @@ export default function Results() {
         id: submission.id,
         user_name: submission.user?.full_name || 'Unknown',
         test_title: submission.test?.title || 'Unknown Test',
-        date: submission.start_time || '',
+        date: submission.end_time || submission.created_at || submission.start_time || '',
         score: Number(submission.score || 0),
         passed: Boolean(submission.passed)
       }));
+  };
+
+  const formatActivityDate = (value: string) => {
+    if (!value) return 'N/A';
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return 'N/A';
+    return format(parsed, 'MMM d, yyyy');
   };
 
   const toggleResultRelease = async (testId: string, currentStatus: boolean) => {
@@ -247,8 +284,8 @@ export default function Results() {
 
       // Update local state
       setSubmissions(prev => prev.map(sub => 
-        sub.test_id === testId 
-          ? { ...sub, test: { ...sub.test!, results_released: !currentStatus } }
+        sub.test_id === testId && sub.test
+          ? { ...sub, test: { ...sub.test, results_released: !currentStatus } }
           : sub
       ));
 
@@ -311,21 +348,57 @@ export default function Results() {
     }
   };
 
-  // Format duration between start and end time
-  const formatDuration = (start: string, end: string) => {
-    const startDate = new Date(start);
-    const endDate = new Date(end);
-    const durationMs = endDate.getTime() - startDate.getTime();
-    
-    const minutes = Math.floor(durationMs / 60000);
-    const seconds = Math.floor((durationMs % 60000) / 1000);
-    
-    return `${minutes}m ${seconds}s`;
+  const normalizeSubject = (value: string | null | undefined) => {
+    const trimmed = value?.trim();
+    return trimmed && trimmed.length > 0 ? trimmed : 'Unassigned';
   };
+
+  const testOptions = useMemo(() => {
+    const seen = new Map<string, string>();
+    submissions.forEach((submission) => {
+      if (submission.test?.id && submission.test?.title) {
+        seen.set(submission.test.id, submission.test.title);
+      }
+    });
+    return Array.from(seen.entries()).map(([id, title]) => ({ id, title }));
+  }, [submissions]);
+
+  const subjectOptions = useMemo(() => {
+    const seen = new Set<string>();
+    submissions.forEach((submission) => {
+      if (submission.test) {
+        seen.add(normalizeSubject(submission.test.test_type));
+      }
+    });
+    return Array.from(seen).sort((a, b) => a.localeCompare(b));
+  }, [submissions]);
+
+  const filteredSubmissions = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    return submissions.filter((submission) => {
+      if (selectedTestId !== 'all' && submission.test?.id !== selectedTestId) {
+        return false;
+      }
+      if (selectedSubject !== 'all') {
+        const subject = normalizeSubject(submission.test?.test_type);
+        if (subject !== selectedSubject) return false;
+      }
+      if (!query) return true;
+      const name = submission.user?.full_name?.toLowerCase() || '';
+      const email = submission.user?.email?.toLowerCase() || '';
+      return name.includes(query) || email.includes(query);
+    });
+  }, [submissions, searchQuery, selectedTestId, selectedSubject]);
+
+  const tabbedSubmissions = useMemo(() => {
+    if (activeTab === 'passed') return filteredSubmissions.filter((s) => s.passed);
+    if (activeTab === 'failed') return filteredSubmissions.filter((s) => !s.passed);
+    return filteredSubmissions;
+  }, [filteredSubmissions, activeTab]);
 
   // Generate CSV of all test results
   const downloadResultsCSV = async () => {
-    if (!submissions.length || !userRole || userRole !== 'admin') {
+    if (!tabbedSubmissions.length || !userRole || userRole !== 'admin') {
       toast({
         title: "Download failed",
         description: "You don't have permission or there are no results to download.",
@@ -337,34 +410,46 @@ export default function Results() {
     setDownloading(true);
     
     try {
+      const slugify = (value: string) =>
+        value
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-+|-+$/g, '');
+
+      const selectedTestTitle =
+        selectedTestId !== 'all'
+          ? testOptions.find((test) => test.id === selectedTestId)?.title
+          : null;
+
+      const baseName = selectedTestTitle ? `results-${slugify(selectedTestTitle)}` : 'results-all';
+
       // Define CSV headers
       const headers = [
-        'Test ID', 
-        'Test Title', 
-        'Candidate ID', 
+        'Test Title',
         'Candidate Name',
         'Email',
-        'Unit',
-        'Submission Date', 
-        'Duration', 
-        'Score', 
+        'Submitted At',
+        'Score',
         'Status',
-        'Violations'
+        'Attempt',
+        'Violations (count)'
       ].join(',');
       
       // Generate CSV rows
-      const rows = submissions.map(submission => {
+      const rows = tabbedSubmissions.map(submission => {
+        const submittedAt = submission.end_time || submission.created_at || submission.start_time;
+        const csvSubmittedAt = formatDateTimeValue(submittedAt, 'yyyy-MM-dd HH:mm:ss');
+        const attemptLabel = submission.attempt_count
+          ? `${submission.attempt_number || 1}/${submission.attempt_count}`
+          : `${submission.attempt_number || 1}`;
         const values = [
-          `"${submission.test_id || ''}"`,
           `"${submission.test?.title || 'Unknown Test'}"`,
-          `"${submission.user_id || ''}"`,
           `"${submission.user?.full_name || 'Unknown'}"`,
           `"${submission.user?.email || ''}"`,
-          `"${submission.user?.unit || ''}"`,
-          `"${submission.start_time ? format(new Date(submission.start_time), 'yyyy-MM-dd HH:mm:ss') : ''}"`,
-          `"${submission.start_time && submission.end_time ? formatDuration(submission.start_time, submission.end_time) : 'N/A'}"`,
+          `"${csvSubmittedAt === 'N/A' ? '' : csvSubmittedAt}"`,
           `"${typeof submission.score === 'number' ? Math.round(submission.score) + '%' : 'N/A'}"`,
           `"${submission.passed ? 'Passed' : 'Failed'}"`,
+          `"${attemptLabel}"`,
           `"${submission.violations_count || 0}"`
         ].join(',');
         return values;
@@ -378,7 +463,7 @@ export default function Results() {
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.setAttribute('href', url);
-      link.setAttribute('download', `test-results-${format(new Date(), 'yyyy-MM-dd')}.csv`);
+      link.setAttribute('download', `${baseName}-${format(new Date(), 'yyyy-MM-dd')}.csv`);
       link.style.visibility = 'hidden';
       document.body.appendChild(link);
       link.click();
@@ -428,7 +513,7 @@ export default function Results() {
               <Button 
                 onClick={downloadResultsCSV} 
                 variant="outline"
-                disabled={downloading || !submissions.length}
+                disabled={downloading || !tabbedSubmissions.length}
                 className="flex items-center gap-2"
               >
                 {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileDown className="h-4 w-4" />}
@@ -465,7 +550,7 @@ export default function Results() {
                       <div>
                         <h4 className="font-medium">{unit.unit || 'Unassigned'}</h4>
                         <p className="text-sm text-muted-foreground">
-                          {unit.totalSubmissions} submissions • {unit.passRate}% pass rate
+                          {unit.totalSubmissions} submissions - {unit.passRate}% pass rate
                         </p>
                       </div>
                       <div className="text-right">
@@ -497,7 +582,7 @@ export default function Results() {
                       <div>
                         <h4 className="font-medium">{activity.user_name}</h4>
                         <p className="text-sm text-muted-foreground">
-                          {activity.test_title} • {format(new Date(activity.date), 'MMM d, yyyy')}
+                          {activity.test_title} - {formatActivityDate(activity.date)}
                         </p>
                       </div>
                       <div className="flex items-center gap-2">
@@ -514,7 +599,49 @@ export default function Results() {
         </div>
       )}
       
-      <Tabs defaultValue="all">
+      <Card className="mb-6">
+        <CardContent className="p-4">
+          <div className="flex flex-col lg:flex-row gap-3">
+            <div className="relative flex-1">
+              <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Search by staff name or email..."
+                className="pl-8"
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+              />
+            </div>
+            <Select value={selectedTestId} onValueChange={setSelectedTestId}>
+              <SelectTrigger className="w-full lg:w-[240px]">
+                <SelectValue placeholder="Filter by test" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All tests</SelectItem>
+                {testOptions.map((test) => (
+                  <SelectItem key={test.id} value={test.id}>
+                    {test.title}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={selectedSubject} onValueChange={setSelectedSubject}>
+              <SelectTrigger className="w-full lg:w-[220px]">
+                <SelectValue placeholder="Filter by subject" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All subjects</SelectItem>
+                {subjectOptions.map((subject) => (
+                  <SelectItem key={subject} value={subject}>
+                    {subject}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="mb-6">
           <TabsTrigger value="all">All Results</TabsTrigger>
           <TabsTrigger value="passed">Passed</TabsTrigger>
@@ -523,8 +650,7 @@ export default function Results() {
         
         <TabsContent value="all">
           <ResultsTable 
-            submissions={submissions} 
-            formatDuration={formatDuration} 
+            submissions={filteredSubmissions} 
             isAdmin={userRole === 'admin'}
             onToggleRelease={toggleResultRelease}
           />
@@ -532,8 +658,7 @@ export default function Results() {
         
         <TabsContent value="passed">
           <ResultsTable 
-            submissions={submissions.filter(s => s.passed)} 
-            formatDuration={formatDuration} 
+            submissions={filteredSubmissions.filter(s => s.passed)} 
             isAdmin={userRole === 'admin'}
             onToggleRelease={toggleResultRelease}
           />
@@ -541,8 +666,7 @@ export default function Results() {
         
         <TabsContent value="failed">
           <ResultsTable 
-            submissions={submissions.filter(s => !s.passed)} 
-            formatDuration={formatDuration} 
+            submissions={filteredSubmissions.filter(s => !s.passed)} 
             isAdmin={userRole === 'admin'}
             onToggleRelease={toggleResultRelease}
           />
@@ -578,12 +702,11 @@ export default function Results() {
 
 interface ResultsTableProps {
   submissions: EnhancedTestSubmission[];
-  formatDuration: (start: string, end: string) => string;
   isAdmin: boolean;
   onToggleRelease: (testId: string, currentStatus: boolean) => void;
 }
 
-function ResultsTable({ submissions, formatDuration, isAdmin, onToggleRelease }: ResultsTableProps) {
+function ResultsTable({ submissions, isAdmin, onToggleRelease }: ResultsTableProps) {
   if (submissions.length === 0) {
     return (
       <Card>
@@ -597,17 +720,17 @@ function ResultsTable({ submissions, formatDuration, isAdmin, onToggleRelease }:
   return (
     <Card>
       <CardContent className="p-0">
-        <div className="overflow-x-auto">
+        <div className="max-h-[520px] overflow-y-auto overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>Test</TableHead>
                 {isAdmin && <TableHead>User</TableHead>}
-                <TableHead>Date</TableHead>
-                <TableHead>Duration</TableHead>
-                {isAdmin && <TableHead>Score</TableHead>}
+                <TableHead>Submitted At</TableHead>
+                <TableHead>Score</TableHead>
+                <TableHead>Attempt</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead>Violations</TableHead>
+                <TableHead>Violations (count)</TableHead>
                 {isAdmin && <TableHead>Release Results</TableHead>}
               </TableRow>
             </TableHeader>
@@ -629,22 +752,18 @@ function ResultsTable({ submissions, formatDuration, isAdmin, onToggleRelease }:
                     </TableCell>
                   )}
                   <TableCell>
-                    {submission.start_time
-                      ? format(new Date(submission.start_time), 'MMM d, yyyy')
+                    {formatDateTimeValue(submission.end_time || submission.created_at || submission.start_time)}
+                  </TableCell>
+                  <TableCell>
+                    {typeof submission.score === 'number'
+                      ? `${Math.round(submission.score)}%`
                       : 'N/A'}
                   </TableCell>
                   <TableCell>
-                    {submission.start_time && submission.end_time
-                      ? formatDuration(submission.start_time, submission.end_time)
-                      : 'Incomplete'}
+                    {submission.attempt_count
+                      ? `${submission.attempt_number || 1}/${submission.attempt_count}`
+                      : `${submission.attempt_number || 1}`}
                   </TableCell>
-                  {isAdmin && (
-                    <TableCell>
-                      {typeof submission.score === 'number'
-                        ? `${Math.round(submission.score)}%`
-                        : 'N/A'}
-                    </TableCell>
-                  )}
                   <TableCell>
                     {submission.passed ? (
                       <Badge className="bg-green-500">
@@ -665,11 +784,15 @@ function ResultsTable({ submissions, formatDuration, isAdmin, onToggleRelease }:
                     <TableCell>
                       <div className="flex items-center gap-2">
                         <Switch
+                          disabled={!submission.test_id}
                           checked={submission.test?.results_released || false}
-                          onCheckedChange={() => onToggleRelease(
-                            submission.test_id!, 
-                            submission.test?.results_released || false
-                          )}
+                          onCheckedChange={() => {
+                            if (!submission.test_id) return;
+                            onToggleRelease(
+                              submission.test_id,
+                              submission.test?.results_released || false
+                            );
+                          }}
                         />
                         {submission.test?.results_released ? (
                           <Eye className="h-4 w-4 text-green-600" />

@@ -12,6 +12,7 @@ interface TestAssignment {
   test_id: string;
   question_count: number;
   is_active: boolean;
+  available_until: string | null;
 }
 
 interface SubmissionContext {
@@ -106,7 +107,7 @@ const Exam = () => {
   const resolveCandidateAssignment = async (userId: string): Promise<TestAssignment | null> => {
     let query = supabase
       .from('test_assignments')
-      .select('id, test_id, question_count, is_active')
+      .select('id, test_id, question_count, is_active, available_until')
       .eq('user_id', userId)
       .eq('is_active', true);
 
@@ -128,6 +129,13 @@ const Exam = () => {
     }
 
     return data[0] as TestAssignment;
+  };
+
+  const isAssignmentExpired = (assignment: TestAssignment) => {
+    if (!assignment.available_until) return false;
+    const parsed = new Date(assignment.available_until);
+    if (Number.isNaN(parsed.getTime())) return false;
+    return Date.now() > parsed.getTime();
   };
 
   const ensureCandidateSubmission = async (
@@ -307,6 +315,14 @@ const Exam = () => {
       setSubmissionId(null);
       setQuestionIds([]);
       setAccessError('No active assignment found for this assessment.');
+      return;
+    }
+
+    if (isAssignmentExpired(assignment)) {
+      setAssignedTest(null);
+      setSubmissionId(null);
+      setQuestionIds([]);
+      setAccessError('This assessment window has expired. Contact your administrator for reassignment.');
       return;
     }
 

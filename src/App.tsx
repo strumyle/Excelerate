@@ -68,6 +68,7 @@ const App = () => (
           <Route path="/tests/create" element={<RequireAuth allowedRoles={['admin']}><AdminLayout><TestCreate /></AdminLayout></RequireAuth>} />
           <Route path="/tests/assign" element={<RequireAuth allowedRoles={['admin']}><AdminLayout><TestAssign /></AdminLayout></RequireAuth>} />
           <Route path="/results" element={<RequireAuth allowedRoles={['admin']}><AdminLayout><Results /></AdminLayout></RequireAuth>} />
+          <Route path="/role-management" element={<RequireAuth allowedRoles={['admin']}><AdminLayout><RoleManagement /></AdminLayout></RequireAuth>} />
           <Route path="/tutorials" element={<RequireAuth allowedRoles={['admin']}><AdminLayout><Tutorials /></AdminLayout></RequireAuth>} />
           <Route path="/course-builder" element={<RequireAuth allowedRoles={['admin']}><AdminLayout><CourseBuilder /></AdminLayout></RequireAuth>} />
           <Route path="/settings" element={<RequireAuth allowedRoles={['admin']}><AdminLayout><Settings /></AdminLayout></RequireAuth>} />

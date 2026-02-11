@@ -3,6 +3,14 @@ import { useState, useEffect } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Label } from '@/components/ui/label';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog';
 import {
   Table,
   TableBody,
@@ -30,20 +38,40 @@ export function QuestionsList() {
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('all');
   const [categories, setCategories] = useState<string[]>([]);
+  const [bucket, setBucket] = useState('all');
+  const [buckets, setBuckets] = useState<string[]>([]);
   const [downloading, setDownloading] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameFrom, setRenameFrom] = useState('');
+  const [renameTo, setRenameTo] = useState('');
+  const [renaming, setRenaming] = useState(false);
   const { toast } = useToast();
 
   useEffect(() => {
     fetchQuestions();
-  }, [category]);
+  }, [category, bucket]);
 
   const fetchQuestions = async () => {
     setLoading(true);
     try {
+      const { data: metadataData, error: metadataError } = await supabase
+        .from('questions')
+        .select('category, test_type');
+
+      if (metadataError) throw metadataError;
+
       let query = supabase.from('questions').select('*');
       
       if (category !== 'all') {
         query = query.eq('category', category);
+      }
+
+      if (bucket !== 'all') {
+        if (bucket === 'Unassigned') {
+          query = query.is('test_type', null);
+        } else {
+          query = query.eq('test_type', bucket);
+        }
       }
       
       const { data, error } = await query;
@@ -53,18 +81,20 @@ export function QuestionsList() {
       // Ensure questions have the test_type field
       const processedData = data?.map(q => ({
         ...q,
-        test_type: q.test_type || 'A'  // Provide default if not present
+        test_type: q.test_type || ''  // Keep empty for unassigned display
       })) as Question[];
       
       setQuestions(processedData);
       
-      // Extract unique categories
-      if (processedData) {
-        const uniqueCategories = Array.from(
-          new Set(processedData.map(q => q.category))
-        );
-        setCategories(uniqueCategories);
-      }
+      const uniqueCategories = Array.from(
+        new Set((metadataData || []).map((q) => q.category).filter(Boolean))
+      );
+      setCategories(uniqueCategories);
+
+      const uniqueBuckets = Array.from(
+        new Set((metadataData || []).map((q) => q.test_type || 'Unassigned'))
+      );
+      setBuckets(uniqueBuckets);
     } catch (error) {
       console.error('Error fetching questions:', error);
     } finally {
@@ -155,11 +185,120 @@ export function QuestionsList() {
     }
   };
 
+  const handleRenameBucket = async () => {
+    const trimmed = renameTo.trim();
+    if (!renameFrom) {
+      toast({
+        title: 'Select a bucket',
+        description: 'Choose a bucket to rename.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    if (!trimmed) {
+      toast({
+        title: 'Missing bucket name',
+        description: 'Enter the new bucket name.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    if (renameFrom === trimmed) {
+      toast({
+        title: 'No changes',
+        description: 'The new bucket name matches the current one.',
+      });
+      return;
+    }
+
+    setRenaming(true);
+    try {
+      let updateQuery = supabase.from('questions').update({ test_type: trimmed });
+      if (renameFrom === 'Unassigned') {
+        updateQuery = updateQuery.is('test_type', null);
+      } else {
+        updateQuery = updateQuery.eq('test_type', renameFrom);
+      }
+
+      const { error } = await updateQuery;
+      if (error) throw error;
+
+      toast({
+        title: 'Bucket renamed',
+        description: `Updated ${renameFrom} to ${trimmed}.`,
+      });
+
+      if (bucket === renameFrom) {
+        setBucket(trimmed);
+      }
+
+      setRenameOpen(false);
+      setRenameTo('');
+      await fetchQuestions();
+    } catch (error) {
+      console.error('Error renaming bucket:', error);
+      toast({
+        title: 'Rename failed',
+        description: 'Unable to rename the bucket right now.',
+        variant: 'destructive',
+      });
+    } finally {
+      setRenaming(false);
+    }
+  };
+
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle>Questions Library</CardTitle>
         <div className="flex flex-wrap items-center gap-2">
+          <Dialog
+            open={renameOpen}
+            onOpenChange={(open) => {
+              setRenameOpen(open);
+              if (open && !renameFrom) {
+                setRenameFrom(bucket !== 'all' ? bucket : buckets[0] || '');
+              }
+            }}
+          >
+            <DialogTrigger asChild>
+              <Button variant="outline">Rename Bucket</Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Rename Assessment Bucket</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-4">
+                <div>
+                  <Label htmlFor="rename-from">Current Bucket</Label>
+                  <Select value={renameFrom} onValueChange={setRenameFrom}>
+                    <SelectTrigger id="rename-from">
+                      <SelectValue placeholder="Select bucket" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {buckets.map((bucketOption) => (
+                        <SelectItem key={bucketOption} value={bucketOption}>
+                          {bucketOption}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label htmlFor="rename-to">New Bucket Name</Label>
+                  <Input
+                    id="rename-to"
+                    value={renameTo}
+                    onChange={(event) => setRenameTo(event.target.value)}
+                    placeholder="Enter new bucket name"
+                  />
+                </div>
+                <Button onClick={handleRenameBucket} disabled={renaming}>
+                  {renaming ? 'Renaming...' : 'Rename Bucket'}
+                </Button>
+              </div>
+            </DialogContent>
+          </Dialog>
           <Button
             variant="outline"
             onClick={downloadAllQuestions}
@@ -186,6 +325,19 @@ export function QuestionsList() {
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
+          <Select value={bucket} onValueChange={setBucket}>
+            <SelectTrigger className="w-full md:w-[200px]">
+              <SelectValue placeholder="Assessment Bucket" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Buckets</SelectItem>
+              {buckets.map((bucketOption) => (
+                <SelectItem key={bucketOption} value={bucketOption}>
+                  {bucketOption}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <Select value={category} onValueChange={setCategory}>
             <SelectTrigger className="w-full md:w-[180px]">
               <SelectValue placeholder="Category" />
@@ -211,7 +363,7 @@ export function QuestionsList() {
                 <TableRow>
                   <TableHead className="w-[45%]">Question</TableHead>
                   <TableHead>Category</TableHead>
-                  <TableHead>Test Type</TableHead>
+                  <TableHead>Assessment Bucket</TableHead>
                   <TableHead>Difficulty</TableHead>
                   <TableHead>Points</TableHead>
                   <TableHead className="w-[100px]">Actions</TableHead>
@@ -222,7 +374,7 @@ export function QuestionsList() {
                   <TableRow key={question.id}>
                     <TableCell>{truncateText(question.text)}</TableCell>
                     <TableCell>{question.category}</TableCell>
-                    <TableCell>{question.test_type || 'A'}</TableCell>
+                    <TableCell>{question.test_type || 'Unassigned'}</TableCell>
                     <TableCell>{question.difficulty}</TableCell>
                     <TableCell>{question.points}</TableCell>
                     <TableCell>

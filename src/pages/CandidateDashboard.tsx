@@ -32,6 +32,7 @@ import { cn } from '@/lib/utils';
 interface AssignedAssessment {
   assignment_id: string;
   question_count: number;
+  available_until: string | null;
   id: string;
   title: string;
   description: string;
@@ -58,7 +59,9 @@ export default function CandidateDashboard() {
   const [user, setUser] = useState<any>(null);
   const [assessments, setAssessments] = useState<AssignedAssessment[]>([]);
   const [testResults, setTestResults] = useState<TestResult[]>([]);
+  const [retakePermissions, setRetakePermissions] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [activeView, setActiveView] = useState<CandidateView>('dashboard');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
@@ -89,6 +92,7 @@ export default function CandidateDashboard() {
       await Promise.all([
         fetchAssignedAssessments(currentUser.id),
         fetchTestResults(currentUser.id),
+        fetchRetakePermissions(currentUser.id),
       ]);
       setLoading(false);
     };
@@ -96,11 +100,18 @@ export default function CandidateDashboard() {
     void initializeDashboard();
   }, [navigate]);
 
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   const fetchAssignedAssessments = async (userId: string) => {
     try {
       const { data: assignmentsData, error: assignmentsError } = await supabase
         .from('test_assignments')
-        .select('id, test_id, question_count, is_active, created_at')
+        .select('id, test_id, question_count, is_active, available_until, created_at')
         .eq('user_id', userId)
         .eq('is_active', true)
         .order('created_at', { ascending: false });
@@ -162,6 +173,7 @@ export default function CandidateDashboard() {
           return {
             assignment_id: assignment.id,
             question_count: assignment.question_count,
+            available_until: assignment.available_until || null,
             id: test.id,
             title: test.title,
             description: test.description || '',
@@ -212,8 +224,50 @@ export default function CandidateDashboard() {
     }
   };
 
+  const fetchRetakePermissions = async (userId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('test_retake_permissions')
+        .select('test_id')
+        .eq('user_id', userId);
+
+      if (error) throw error;
+
+      const permissionSet = new Set((data || []).map((row) => row.test_id));
+      setRetakePermissions(permissionSet);
+    } catch (error) {
+      console.error('Error fetching retake permissions:', error);
+      setRetakePermissions(new Set());
+    }
+  };
+
   const handleStartAssessment = (assessment: AssignedAssessment) => {
     navigate(`/exam/${assessment.id}?assignmentId=${assessment.assignment_id}`);
+  };
+
+  const getRemainingTimeMs = (availableUntil: string | null) => {
+    if (!availableUntil) return null;
+    const parsed = new Date(availableUntil);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return Math.max(0, parsed.getTime() - nowMs);
+  };
+
+  const formatRemainingTime = (remainingMs: number | null) => {
+    if (remainingMs === null) return 'No access deadline';
+    if (remainingMs <= 0) return 'Window closed';
+    const totalSeconds = Math.floor(remainingMs / 1000);
+    const days = Math.floor(totalSeconds / 86400);
+    const hours = Math.floor((totalSeconds % 86400) / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    if (days > 0) return `${days}d ${hours}h ${minutes}m ${seconds}s left`;
+    if (hours > 0) return `${hours}h ${minutes}m ${seconds}s left`;
+    return `${minutes}m ${seconds}s left`;
+  };
+
+  const isAvailabilityExpired = (assessment: AssignedAssessment) => {
+    const remaining = getRemainingTimeMs(assessment.available_until);
+    return remaining !== null && remaining <= 0;
   };
 
   const getGrade = (score: number, passingPercentage: number) => {
@@ -222,9 +276,14 @@ export default function CandidateDashboard() {
     return { grade: 'Pass', color: 'text-green-600', bg: 'bg-green-100' };
   };
 
-  const getActionLabel = (status: AssignedAssessment['latest_status']) => {
+  const getActionLabel = (
+    status: AssignedAssessment['latest_status'],
+    retakeAllowed: boolean,
+    availabilityExpired: boolean
+  ) => {
+    if (availabilityExpired) return 'Assessment closed';
     if (status === 'in_progress') return 'Resume Assessment';
-    if (status === 'completed') return 'Start Retake';
+    if (status === 'completed') return retakeAllowed ? 'Start Retake' : 'Retake unavailable';
     return 'Start Assessment';
   };
 
@@ -433,6 +492,19 @@ export default function CandidateDashboard() {
                 key={assessment.assignment_id}
                 className="rounded-xl border border-border/70 bg-card p-5 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md"
               >
+                {(() => {
+                  const availabilityExpired = isAvailabilityExpired(assessment);
+                  const remainingTime = getRemainingTimeMs(assessment.available_until);
+                  const canRetake = retakePermissions.has(assessment.id);
+                  const isRetakeBlocked =
+                    assessment.latest_status === 'completed' && !canRetake;
+                  const isAccessBlocked = availabilityExpired || isRetakeBlocked;
+                  const actionLabel = getActionLabel(
+                    assessment.latest_status,
+                    canRetake,
+                    availabilityExpired
+                  );
+                  return (
                 <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
                   <div className="flex-1">
                     <h3 className="text-lg font-semibold">{assessment.title}</h3>
@@ -450,6 +522,10 @@ export default function CandidateDashboard() {
                         <ListChecks className="w-4 h-4 mr-1.5 text-primary" />
                         {assessment.question_count} questions
                       </div>
+                      <div className="flex items-center">
+                        <Clock className="w-4 h-4 mr-1.5 text-primary" />
+                        {formatRemainingTime(remainingTime)}
+                      </div>
                     </div>
                     <div className="mt-3">
                       <Badge variant="outline" className={cn('font-medium', getStatusBadgeClasses(assessment.latest_status))}>
@@ -457,13 +533,32 @@ export default function CandidateDashboard() {
                       </Badge>
                     </div>
                   </div>
-                  <Button
-                    onClick={() => handleStartAssessment(assessment)}
-                    className="bg-primary hover:bg-primary/90 w-full lg:w-auto"
-                  >
-                    {getActionLabel(assessment.latest_status)}
-                  </Button>
+                  <div className="flex flex-col items-start">
+                    <Button
+                      onClick={() => {
+                        if (!isAccessBlocked) {
+                          handleStartAssessment(assessment);
+                        }
+                      }}
+                      disabled={isAccessBlocked}
+                      className="bg-primary hover:bg-primary/90 w-full lg:w-auto"
+                    >
+                      {actionLabel}
+                    </Button>
+                    {availabilityExpired && (
+                      <span className="text-xs text-muted-foreground mt-2">
+                        Assessment window has expired.
+                      </span>
+                    )}
+                    {!availabilityExpired && isRetakeBlocked && (
+                      <span className="text-xs text-muted-foreground mt-2">
+                        Retake permission required.
+                      </span>
+                    )}
+                  </div>
                 </div>
+                  );
+                })()}
               </div>
             ))}
           </div>

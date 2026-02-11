@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { supabase, Question } from '@/lib/supabase';
 import { useNavigate } from 'react-router-dom';
 import { toast } from '@/components/ui/use-toast';
@@ -38,14 +38,25 @@ const TestCreate = () => {
   const [selectedQuestions, setSelectedQuestions] = useState<Question[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [difficulties, setDifficulties] = useState<string[]>([]);
+  const [buckets, setBuckets] = useState<string[]>([]);
+  const [selectedBucket, setSelectedBucket] = useState('');
   const [questionsPerCandidate, setQuestionsPerCandidate] = useState(20);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const navigate = useNavigate();
+  const filteredQuestions = useMemo(() => {
+    if (!selectedBucket || selectedBucket === 'all') {
+      return availableQuestions;
+    }
+    return availableQuestions.filter(
+      (question) => (question.test_type || 'Unassigned') === selectedBucket
+    );
+  }, [availableQuestions, selectedBucket]);
+
   const selectedBankSize = selectedQuestions.length;
   const allSelected =
-    availableQuestions.length > 0 &&
-    selectedQuestions.length === availableQuestions.length;
+    filteredQuestions.length > 0 &&
+    selectedQuestions.length === filteredQuestions.length;
 
   const toggleQuestion = (question: Question) => {
     if (selectedQuestions.find((q) => q.id === question.id)) {
@@ -60,6 +71,15 @@ const TestCreate = () => {
       toast({
         title: "Missing title",
         description: "Please provide a title for the test.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!selectedBucket) {
+      toast({
+        title: "Missing bucket",
+        description: "Please select an assessment bucket.",
         variant: "destructive",
       });
       return;
@@ -121,6 +141,7 @@ const TestCreate = () => {
           created_by: session.user.id,
           question_ids: questionIds,
           question_count: questionsPerCandidate,
+          test_type: selectedBucket === 'Unassigned' ? null : selectedBucket,
         })
         .select()
         .single();
@@ -172,7 +193,7 @@ const TestCreate = () => {
         // Process questions to ensure test_type is present
         const processedQuestions = questionsData?.map(q => ({
           ...q,
-          test_type: q.test_type || 'A'  // Provide default if not present
+          test_type: q.test_type || ''  // Keep empty for unassigned bucket
         })) as Question[];
         
         setAvailableQuestions(processedQuestions);
@@ -182,6 +203,14 @@ const TestCreate = () => {
           new Set(processedQuestions.map(q => q.category))
         );
         setCategories(uniqueCategories);
+
+        const uniqueBuckets = Array.from(
+          new Set(processedQuestions.map(q => q.test_type || 'Unassigned'))
+        );
+        setBuckets(uniqueBuckets);
+        if (!selectedBucket && uniqueBuckets.length > 0) {
+          setSelectedBucket(uniqueBuckets[0]);
+        }
         
         // Extract unique difficulty levels
         const uniqueDifficulties = Array.from(
@@ -207,6 +236,18 @@ const TestCreate = () => {
     
     fetchQuestions();
   }, []);
+
+  useEffect(() => {
+    if (selectedBucket) {
+      setSelectedQuestions([]);
+    }
+  }, [selectedBucket]);
+
+  useEffect(() => {
+    if (filteredQuestions.length > 0 && questionsPerCandidate > filteredQuestions.length) {
+      setQuestionsPerCandidate(filteredQuestions.length);
+    }
+  }, [filteredQuestions, questionsPerCandidate]);
 
   if (loading) {
     return (
@@ -267,6 +308,26 @@ const TestCreate = () => {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
+              <Label htmlFor="bucket">Assessment Bucket</Label>
+              <Select value={selectedBucket} onValueChange={setSelectedBucket}>
+                <SelectTrigger id="bucket">
+                  <SelectValue placeholder="Select bucket" />
+                </SelectTrigger>
+                <SelectContent>
+                  {buckets.map((bucketOption) => (
+                    <SelectItem key={bucketOption} value={bucketOption}>
+                      {bucketOption}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground mt-1">
+                Questions shown below are filtered by the selected bucket.
+              </p>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
               <Label htmlFor="questionsPerCandidate">Questions per candidate</Label>
               <Input
                 id="questionsPerCandidate"
@@ -300,9 +361,9 @@ const TestCreate = () => {
             <div>
               <h3 className="text-xl font-semibold">Select Questions</h3>
               <p className="text-sm text-muted-foreground">
-                {selectedQuestions.length} of {availableQuestions.length} selected
+                {selectedQuestions.length} of {filteredQuestions.length} selected
                 {selectedBankSize > 0 && questionsPerCandidate > 0
-                  ? ` · ${Math.min(questionsPerCandidate, selectedBankSize)} questions per candidate`
+                  ? ` - ${Math.min(questionsPerCandidate, selectedBankSize)} questions per candidate`
                   : ''}
               </p>
             </div>
@@ -310,16 +371,16 @@ const TestCreate = () => {
               type="button"
               variant="outline"
               onClick={() =>
-                allSelected ? setSelectedQuestions([]) : setSelectedQuestions([...availableQuestions])
+                allSelected ? setSelectedQuestions([]) : setSelectedQuestions([...filteredQuestions])
               }
-              disabled={availableQuestions.length === 0}
+              disabled={filteredQuestions.length === 0}
             >
               {allSelected ? 'Clear Selection' : 'Select All'}
             </Button>
           </div>
           <ScrollArea className="h-[300px] w-full rounded-md border p-4">
             <div className="space-y-2">
-              {availableQuestions.map((question) => (
+              {filteredQuestions.map((question) => (
                 <div key={question.id} className="flex items-center space-x-2">
                   <Checkbox
                     id={`question-${question.id}`}
@@ -327,7 +388,7 @@ const TestCreate = () => {
                     onCheckedChange={() => toggleQuestion(question)}
                   />
                   <Label htmlFor={`question-${question.id}`} className="cursor-pointer">
-                    {question.text} ({question.category}, {question.difficulty}, Type: {question.test_type || 'A'})
+                    {question.text} ({question.category}, {question.difficulty}, Bucket: {question.test_type || 'Unassigned'})
                   </Label>
                 </div>
               ))}

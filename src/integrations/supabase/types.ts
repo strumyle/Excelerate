@@ -837,6 +837,7 @@ export type Database = {
       }
       test_assignments: {
         Row: {
+          available_until: string | null
           assigned_by: string | null
           assigned_via: string
           created_at: string
@@ -850,6 +851,7 @@ export type Database = {
           user_id: string
         }
         Insert: {
+          available_until?: string | null
           assigned_by?: string | null
           assigned_via?: string
           created_at?: string
@@ -863,6 +865,7 @@ export type Database = {
           user_id: string
         }
         Update: {
+          available_until?: string | null
           assigned_by?: string | null
           assigned_via?: string
           created_at?: string
