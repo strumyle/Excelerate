@@ -8,7 +8,6 @@ import { Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbP
 import { 
   BookOpen, 
   ArrowLeft, 
-  Play, 
   CheckCircle2, 
   Clock,
   FileText,
@@ -16,7 +15,7 @@ import {
   ExternalLink,
   PlayCircle
 } from 'lucide-react';
-import { getCourse, getCourseModules, getCourseProgress, getNextIncompleteModule } from '@/lib/learning';
+import { getCourse, getCourseModules, getCourseProgress } from '@/lib/learning';
 import type { Course, Chapter, CourseModule, EnrollmentProgress } from '@/lib/learning';
 import ModuleViewer from '@/components/learning/ModuleViewer';
 import { useToast } from '@/hooks/use-toast';
@@ -46,12 +45,22 @@ export default function CourseDetail() {
   }, [courseId]);
 
   const loadCourseData = async () => {
+    if (!courseId || courseId === 'undefined' || courseId === 'null') {
+      setCourse(null);
+      setChapters([]);
+      setModules([]);
+      setProgress(null);
+      setLoading(false);
+      return;
+    }
+
     try {
       setLoading(true);
-      const [courseData, progressData, modulesData] = await Promise.all([
-        getCourse(courseId!),
-        getCourseProgress(courseId!),
-        getCourseModules(courseId!)
+      const courseData = await getCourse(courseId);
+      const resolvedCourseId = courseData.course.id;
+      const [progressData, modulesData] = await Promise.all([
+        getCourseProgress(resolvedCourseId),
+        getCourseModules(resolvedCourseId)
       ]);
 
       setCourse(courseData.course);
@@ -75,19 +84,29 @@ export default function CourseDetail() {
 
       setModules(modulesWithChapter);
 
-      // Set current module to next incomplete or first module
-      const nextModule = await getNextIncompleteModule(courseId!);
+      // Set current module to next incomplete required module or first module
+      const nextModule = modulesWithChapter.find((module) => {
+        if (!module.is_required) return false;
+        const moduleProgress = module.progress?.[0];
+        return moduleProgress?.status !== 'completed';
+      });
       if (nextModule) {
         setCurrentModuleId(nextModule.id);
       } else if (modulesWithChapter.length > 0) {
         setCurrentModuleId(modulesWithChapter[0].id);
       }
 
-    } catch (error) {
-      console.error('Error loading course:', error);
+    } catch (error: any) {
+      console.error('Error loading course:', {
+        courseId,
+        message: error?.message,
+        details: error?.details,
+        hint: error?.hint,
+        code: error?.code,
+      });
       toast({
         title: "Error",
-        description: "Failed to load course data",
+        description: error?.message || "Failed to load course data",
         variant: "destructive"
       });
     } finally {

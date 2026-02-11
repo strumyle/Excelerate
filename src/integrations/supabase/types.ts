@@ -890,25 +890,31 @@ export type Database = {
       }
       test_retake_permissions: {
         Row: {
+          granted_attempts: number
           granted_at: string | null
           granted_by: string
           id: string
+          remaining_attempts: number
           reason: string | null
           test_id: string
           user_id: string
         }
         Insert: {
+          granted_attempts?: number
           granted_at?: string | null
           granted_by: string
           id?: string
+          remaining_attempts?: number
           reason?: string | null
           test_id: string
           user_id: string
         }
         Update: {
+          granted_attempts?: number
           granted_at?: string | null
           granted_by?: string
           id?: string
+          remaining_attempts?: number
           reason?: string | null
           test_id?: string
           user_id?: string
@@ -924,6 +930,8 @@ export type Database = {
           end_time: string | null
           id: string
           passed: boolean | null
+          proctoring_consent: string
+          proctoring_enabled: boolean
           question_ids: string[] | null
           score: number | null
           start_time: string | null
@@ -943,6 +951,8 @@ export type Database = {
           end_time?: string | null
           id?: string
           passed?: boolean | null
+          proctoring_consent?: string
+          proctoring_enabled?: boolean
           question_ids?: string[] | null
           score?: number | null
           start_time?: string | null
@@ -962,6 +972,8 @@ export type Database = {
           end_time?: string | null
           id?: string
           passed?: boolean | null
+          proctoring_consent?: string
+          proctoring_enabled?: boolean
           question_ids?: string[] | null
           score?: number | null
           start_time?: string | null
@@ -1000,6 +1012,7 @@ export type Database = {
           id: string
           is_active: boolean | null
           passing_percentage: number
+          proctoring_required: boolean
           question_count: number | null
           question_ids: string[]
           results_released: boolean | null
@@ -1016,6 +1029,7 @@ export type Database = {
           id?: string
           is_active?: boolean | null
           passing_percentage: number
+          proctoring_required?: boolean
           question_count?: number | null
           question_ids: string[]
           results_released?: boolean | null
@@ -1032,6 +1046,7 @@ export type Database = {
           id?: string
           is_active?: boolean | null
           passing_percentage?: number
+          proctoring_required?: boolean
           question_count?: number | null
           question_ids?: string[]
           results_released?: boolean | null

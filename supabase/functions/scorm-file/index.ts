@@ -6,9 +6,78 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+const SPECIAL_ADMIN_ID = '600a8af2-9ccf-4c55-b351-a14e2b5b2221';
+const SPECIAL_ADMIN_EMAIL = 'ameh.oche@babbangona.com';
+
+const jsonResponse = (payload: unknown, status = 200) =>
+  new Response(JSON.stringify(payload), {
+    status,
+    headers: { 'Content-Type': 'application/json', ...corsHeaders },
+  });
+
+const getRouteParams = (url: URL) => {
+  const segments = url.pathname.split('/').filter(Boolean);
+  const fnIndex = segments.lastIndexOf('scorm-file');
+  if (fnIndex < 0) {
+    return { attemptIdFromPath: null, fileFromPath: '', tokenFromPath: null };
+  }
+
+  const attemptIdFromPath = segments[fnIndex + 1] || null;
+  const tokenMarker = segments[fnIndex + 2];
+  const hasTokenSegment = tokenMarker === 'token';
+  const tokenFromPath = hasTokenSegment ? segments[fnIndex + 3] || null : null;
+  const fileFromPath = hasTokenSegment
+    ? segments.slice(fnIndex + 4).join('/')
+    : segments.slice(fnIndex + 2).join('/');
+
+  return { attemptIdFromPath, fileFromPath, tokenFromPath };
+};
+
+const sanitizeRelativePath = (rawPath: string) => {
+  if (!rawPath) return '';
+
+  const decoded = decodeURIComponent(rawPath)
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .trim();
+
+  if (!decoded) return '';
+  if (decoded.includes('..') || decoded.includes('\0')) {
+    return null;
+  }
+
+  return decoded;
+};
+
+const inferContentType = (path: string, fallback: string | null) => {
+  if (fallback && fallback.trim().length > 0) return fallback;
+  const lower = path.toLowerCase();
+
+  if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'text/html; charset=utf-8';
+  if (lower.endsWith('.js')) return 'application/javascript; charset=utf-8';
+  if (lower.endsWith('.css')) return 'text/css; charset=utf-8';
+  if (lower.endsWith('.json')) return 'application/json; charset=utf-8';
+  if (lower.endsWith('.xml')) return 'application/xml; charset=utf-8';
+  if (lower.endsWith('.svg')) return 'image/svg+xml';
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+  if (lower.endsWith('.gif')) return 'image/gif';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  if (lower.endsWith('.mp4')) return 'video/mp4';
+  if (lower.endsWith('.mp3')) return 'audio/mpeg';
+  if (lower.endsWith('.woff')) return 'font/woff';
+  if (lower.endsWith('.woff2')) return 'font/woff2';
+
+  return 'application/octet-stream';
+};
+
 serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
+  }
+
+  if (req.method !== 'GET') {
+    return jsonResponse({ error: 'Method not allowed' }, 405);
   }
 
   try {
@@ -18,132 +87,101 @@ serve(async (req: Request) => {
     );
 
     const url = new URL(req.url);
-    const attemptId = url.searchParams.get('attemptId');
-    const filePath = url.searchParams.get('file') || '';
+    const { attemptIdFromPath, fileFromPath, tokenFromPath } = getRouteParams(url);
+    const attemptIdFromQuery = url.searchParams.get('attemptId');
+    const fileFromQuery = url.searchParams.get('file') || '';
 
+    const attemptId = attemptIdFromPath || attemptIdFromQuery;
     if (!attemptId) {
-      return new Response('Attempt ID required', { status: 400 });
+      return jsonResponse({ error: 'Attempt ID required' }, 400);
     }
 
-    // Verify user has access to this attempt
-    const authHeader = req.headers.get('authorization');
-    if (authHeader) {
-      const { data: { user } } = await supabase.auth.getUser(
-        authHeader.replace('Bearer ', '')
-      );
-      
-      if (user) {
-        const { data: attemptData } = await supabase
-          .from('scorm_attempts')
-          .select(`
-            *,
-            scorm_packages(storage_prefix, entry_point)
-          `)
-          .eq('id', attemptId)
-          .eq('user_id', user.id)
-          .single();
+    const tokenFromHeader = req.headers.get('authorization')?.replace('Bearer ', '').trim();
+    const tokenFromQuery = url.searchParams.get('token')?.trim();
+    const token = tokenFromHeader || tokenFromQuery || (tokenFromPath ? decodeURIComponent(tokenFromPath) : null);
 
-        if (!attemptData) {
-          return new Response('Unauthorized', { status: 403 });
-        }
-
-        const storagePrefix = attemptData.scorm_packages?.storage_prefix;
-        const entryPoint = attemptData.scorm_packages?.entry_point;
-        
-        // If no specific file requested, serve the entry point
-        const targetFile = filePath || entryPoint || 'index.html';
-        const fullPath = `${storagePrefix}${targetFile}`;
-
-        // Get signed URL for the file
-        const { data: signedUrlData, error: signedUrlError } = await supabase.storage
-          .from('scorm-packages')
-          .createSignedUrl(fullPath, 3600); // 1 hour expiry
-
-        if (signedUrlError || !signedUrlData?.signedUrl) {
-          // For demo, return a basic HTML page if file not found
-          const demoContent = `
-<!DOCTYPE html>
-<html>
-<head>
-    <title>SCORM Content</title>
-    <script>
-        // SCORM API detection
-        function findAPI(win) {
-            let attempts = 0;
-            while (win && attempts < 10) {
-                if (win.API || win.API_1484_11) {
-                    return win.API || win.API_1484_11;
-                }
-                if (win.parent && win.parent !== win) {
-                    win = win.parent;
-                } else if (win.opener) {
-                    win = win.opener;
-                } else {
-                    break;
-                }
-                attempts++;
-            }
-            return null;
-        }
-
-        window.addEventListener('load', function() {
-            const api = findAPI(window);
-            if (api) {
-                console.log('SCORM API found');
-                // Initialize
-                if (api.LMSInitialize) {
-                    api.LMSInitialize('');
-                    api.LMSSetValue('cmi.core.lesson_status', 'incomplete');
-                } else if (api.Initialize) {
-                    api.Initialize('');
-                    api.SetValue('cmi.completion_status', 'incomplete');
-                }
-            } else {
-                console.log('SCORM API not found');
-            }
-        });
-    </script>
-</head>
-<body>
-    <h1>Demo SCORM Content</h1>
-    <p>This is a demonstration SCORM package.</p>
-    <button onclick="markComplete()">Complete Course</button>
-    
-    <script>
-        function markComplete() {
-            const api = findAPI(window);
-            if (api) {
-                if (api.LMSSetValue) {
-                    api.LMSSetValue('cmi.core.lesson_status', 'completed');
-                    api.LMSSetValue('cmi.core.score.raw', '100');
-                    api.LMSFinish('');
-                } else if (api.SetValue) {
-                    api.SetValue('cmi.completion_status', 'completed');
-                    api.SetValue('cmi.success_status', 'passed');
-                    api.SetValue('cmi.score.raw', '100');
-                    api.Terminate('');
-                }
-                alert('Course completed!');
-            }
-        }
-    </script>
-</body>
-</html>`;
-          
-          return new Response(demoContent, {
-            headers: { 'Content-Type': 'text/html', ...corsHeaders }
-          });
-        }
-
-        // Redirect to signed URL
-        return Response.redirect(signedUrlData.signedUrl, 302);
-      }
+    if (!token) {
+      return jsonResponse({ error: 'Authorization required' }, 401);
     }
 
-    return new Response('Unauthorized', { status: 401 });
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser(token);
 
+    if (authError || !user) {
+      return jsonResponse({ error: 'Invalid authorization token' }, 401);
+    }
+
+    const { data: requesterProfile } = await supabase
+      .from('users')
+      .select('role')
+      .eq('id', user.id)
+      .maybeSingle();
+    const isAdminRequester =
+      requesterProfile?.role === 'admin' ||
+      user.id === SPECIAL_ADMIN_ID ||
+      user.email === SPECIAL_ADMIN_EMAIL;
+
+    const { data: attemptData, error: attemptError } = await supabase
+      .from('scorm_attempts')
+      .select(`
+        id,
+        user_id,
+        scorm_packages(storage_prefix, entry_point)
+      `)
+      .eq('id', attemptId)
+      .single();
+
+    if (attemptError || !attemptData) {
+      return jsonResponse({ error: 'Attempt not found' }, 404);
+    }
+
+    if (!isAdminRequester && attemptData.user_id !== user.id) {
+      return jsonResponse({ error: 'Not allowed to access this attempt' }, 403);
+    }
+
+    const storagePrefix = attemptData.scorm_packages?.storage_prefix;
+    const entryPoint = attemptData.scorm_packages?.entry_point;
+
+    if (!storagePrefix || !entryPoint) {
+      return jsonResponse({ error: 'Package metadata is incomplete' }, 500);
+    }
+
+    const rawRequestedPath = fileFromPath || fileFromQuery || entryPoint;
+    const safePath = sanitizeRelativePath(rawRequestedPath);
+
+    if (safePath === null) {
+      return jsonResponse({ error: 'Invalid file path' }, 400);
+    }
+
+    const normalizedPath = safePath || sanitizeRelativePath(entryPoint);
+    if (!normalizedPath) {
+      return jsonResponse({ error: 'Unable to resolve package entry point' }, 500);
+    }
+
+    const fullPath = `${storagePrefix}${normalizedPath}`;
+
+    const { data: fileBlob, error: fileError } = await supabase.storage
+      .from('scorm-packages')
+      .download(fullPath);
+
+    if (fileError || !fileBlob) {
+      console.error('SCORM file download error:', fileError, 'path:', fullPath);
+      return jsonResponse({ error: 'Requested SCORM asset not found' }, 404);
+    }
+
+    const contentType = inferContentType(normalizedPath, fileBlob.type || null);
+    return new Response(fileBlob, {
+      status: 200,
+      headers: {
+        ...corsHeaders,
+        'Content-Type': contentType,
+        'Cache-Control': 'private, max-age=60',
+      },
+    });
   } catch (error) {
     console.error('Error in scorm-file:', error);
-    return new Response('Internal server error', { status: 500 });
+    return jsonResponse({ error: error.message || 'Internal server error' }, 500);
   }
 });

@@ -6,8 +6,9 @@ import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
 import { useToast } from '@/components/ui/use-toast';
 import { Question } from '@/lib/supabase';
-import { supabase } from '@/integrations/supabase/client';
-import { AntiCheat } from '@/utils/antiCheat';
+import { supabase, SUPABASE_URL } from '@/integrations/supabase/client';
+import { AntiCheat, type ViolationType } from '@/utils/antiCheat';
+import { MediaProctor, type ProctoringConsent, type ProctoringStatus } from '@/utils/mediaProctor';
 import { useNavigate, useParams } from 'react-router-dom';
 import { AlertCircle, Clock, AlertTriangle } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -38,6 +39,20 @@ interface GradeSubmissionResponse {
   resultsReleased?: boolean;
 }
 
+const violationMessageMap: Record<string, string> = {
+  tab_switch: 'Tab switch detected. This activity has been recorded.',
+  right_click: 'Right-click is disabled during the exam and has been recorded.',
+  copy: 'Copy attempt detected and recorded.',
+  print_screen: 'Print screen attempt detected and recorded.',
+  proctor_permission_denied: 'Camera and microphone permission was denied. This has been flagged.',
+  camera_missing: 'No usable camera detected. This has been flagged.',
+  camera_lost: 'Camera feed was interrupted. This has been flagged.',
+  no_face_detected: 'No face detected for an extended period. This has been flagged.',
+  multiple_faces_detected: 'Multiple faces detected. This has been flagged.',
+  mic_muted_or_blocked: 'Microphone became unavailable. This has been flagged.',
+  sustained_speech_detected: 'Sustained speech was detected and has been flagged.',
+};
+
 export function ExamInterface({
   testId: propTestId,
   submissionId,
@@ -57,11 +72,20 @@ export function ExamInterface({
   const [violations, setViolations] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showAutoSubmitWarning, setShowAutoSubmitWarning] = useState(false);
+  const [proctoringRequired, setProctoringRequired] = useState(false);
+  const [proctoringConsent, setProctoringConsent] = useState<ProctoringConsent>('unknown');
+  const [proctoringStatus, setProctoringStatus] = useState<ProctoringStatus>('inactive');
+  const [proctoringNote, setProctoringNote] = useState<string | null>(null);
+  const [showProctoringConsentModal, setShowProctoringConsentModal] = useState(false);
+  const [antiCheatReady, setAntiCheatReady] = useState(false);
   const lastSavedRef = useRef<string>('');
   const localSaveTimerRef = useRef<number | null>(null);
   const startTimeRef = useRef<number | null>(null);
   const durationSecondsRef = useRef<number>(0);
   const hasShownTimeWarningRef = useRef(false);
+  const antiCheatRef = useRef<AntiCheat | null>(null);
+  const mediaProctorRef = useRef<MediaProctor | null>(null);
+  const violationToastTimestampsRef = useRef<Map<string, number>>(new Map());
 
   const { toast } = useToast();
   const navigate = useNavigate();
@@ -78,6 +102,8 @@ export function ExamInterface({
   };
 
   const getStorageKey = () => (submissionId ? `exam_progress_${submissionId}` : 'exam_progress');
+  const getSubmissionLockKey = () =>
+    submissionId ? `active_exam_submission_${submissionId}` : 'active_exam_submission';
 
   const readLocalProgress = () => {
     if (!submissionId) return null;
@@ -105,6 +131,130 @@ export function ExamInterface({
     } catch {
       // Ignore local storage failures
     }
+  };
+
+  const clearSubmissionLock = () => {
+    if (!submissionId) return;
+    try {
+      localStorage.removeItem(getSubmissionLockKey());
+    } catch {
+      // Ignore local storage failures
+    }
+  };
+
+  const handleViolationEvent = (type: ViolationType) => {
+    setViolations((prev) => prev + 1);
+    const now = Date.now();
+    const lastShownAt = violationToastTimestampsRef.current.get(type) || 0;
+    if (now - lastShownAt < 4000) return;
+    violationToastTimestampsRef.current.set(type, now);
+
+    toast({
+      title: 'Warning',
+      description: (
+        <div className="flex items-center gap-2">
+          <AlertTriangle className="h-4 w-4" />
+          <span>{violationMessageMap[type] || 'Suspicious activity detected and recorded.'}</span>
+        </div>
+      ),
+      variant: 'destructive',
+    });
+  };
+
+  const syncProctoringFields = async (consent: ProctoringConsent, enabled: boolean) => {
+    if (!submissionId) return;
+
+    const { error } = await supabase
+      .from('test_submissions')
+      .update({
+        proctoring_consent: consent,
+        proctoring_enabled: enabled,
+      })
+      .eq('id', submissionId);
+
+    if (error) {
+      throw error;
+    }
+  };
+
+  const startMediaProctoring = async () => {
+    if (!submissionId) return;
+    if (!antiCheatRef.current || !antiCheatReady) {
+      throw new Error('Anti-cheat system is still initializing.');
+    }
+
+    if (mediaProctorRef.current) {
+      mediaProctorRef.current.stop();
+      mediaProctorRef.current = null;
+    }
+
+    const mediaProctor = new MediaProctor({
+      onViolation: (type, details) => {
+        void antiCheatRef.current?.recordExternalViolation(type, details);
+      },
+    });
+
+    mediaProctorRef.current = mediaProctor;
+    const result = await mediaProctor.start();
+    setProctoringConsent(result.consent);
+    setProctoringStatus(result.status);
+    setProctoringNote(result.reason || null);
+
+    const enabled = result.enabled && result.consent === 'granted';
+    await syncProctoringFields(result.consent, enabled);
+
+    if (result.consent === 'denied') {
+      await antiCheatRef.current.recordExternalViolation('proctor_permission_denied', {
+        reason: 'browser_permission_denied',
+      });
+    }
+  };
+
+  const handleProctoringConsentGrant = async () => {
+    try {
+      setShowProctoringConsentModal(false);
+      await startMediaProctoring();
+    } catch (error: any) {
+      console.error('Failed to initialize media proctoring:', error);
+      setProctoringConsent('unsupported');
+      setProctoringStatus('limited');
+      setProctoringNote(error?.message || 'Could not initialize media monitoring.');
+      await syncProctoringFields('unsupported', false).catch((updateError) => {
+        console.error('Failed to persist proctoring unsupported state:', updateError);
+      });
+      toast({
+        title: 'Proctoring Limited',
+        description: 'Could not fully initialize camera/audio checks. Exam will continue and this is flagged.',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleProctoringConsentDecline = async () => {
+    setShowProctoringConsentModal(false);
+    setProctoringConsent('denied');
+    setProctoringStatus('declined');
+    setProctoringNote('Candidate declined camera/audio access.');
+    mediaProctorRef.current?.stop();
+    mediaProctorRef.current = null;
+
+    await syncProctoringFields('denied', false).catch((error) => {
+      console.error('Failed to persist proctoring denied state:', error);
+    });
+    const denialViolationPromise = antiCheatRef.current?.recordExternalViolation(
+      'proctor_permission_denied',
+      { reason: 'user_declined_permission' }
+    );
+    if (denialViolationPromise) {
+      await denialViolationPromise.catch((error) => {
+        console.error('Failed to record proctor permission denial:', error);
+      });
+    }
+  };
+
+  const handleActivateProctoring = () => {
+    if (!proctoringRequired) return;
+    setShowProctoringConsentModal(true);
   };
 
   const normalizeAnswers = (input: unknown, validIds: string[]) => {
@@ -159,7 +309,7 @@ export function ExamInterface({
             supabase.from('tests').select('*').eq('id', testId).single(),
             supabase
               .from('test_submissions')
-              .select('question_ids, answers, start_time')
+              .select('question_ids, answers, start_time, violations_count, proctoring_enabled, proctoring_consent')
               .eq('id', submissionId)
               .single(),
           ]);
@@ -173,6 +323,33 @@ export function ExamInterface({
         }
 
         setTestData(test);
+        setProctoringRequired(Boolean(test.proctoring_required));
+        setViolations(submissionRow.violations_count || 0);
+
+        const submissionConsent = (submissionRow.proctoring_consent || 'unknown') as ProctoringConsent;
+        setProctoringConsent(submissionConsent);
+        if (!test.proctoring_required) {
+          setProctoringStatus('inactive');
+          setProctoringNote(null);
+          setShowProctoringConsentModal(false);
+        } else if (submissionConsent === 'granted' && submissionRow.proctoring_enabled) {
+          setProctoringStatus('active');
+          setProctoringNote(null);
+          setShowProctoringConsentModal(false);
+        } else if (submissionConsent === 'denied') {
+          setProctoringStatus('declined');
+          setProctoringNote('Camera/audio permission declined for this attempt.');
+          setShowProctoringConsentModal(false);
+        } else if (submissionConsent === 'unsupported') {
+          setProctoringStatus('limited');
+          setProctoringNote('Camera/audio monitoring has limited support on this device.');
+          setShowProctoringConsentModal(false);
+        } else {
+          setProctoringStatus('inactive');
+          setProctoringNote(null);
+          setShowProctoringConsentModal(true);
+        }
+
         const startTime = submissionRow.start_time ? new Date(submissionRow.start_time).getTime() : Date.now();
         const durationSeconds = Math.max(0, Math.floor(test.duration_minutes * 60));
         const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startTime) / 1000));
@@ -316,6 +493,8 @@ export function ExamInterface({
   useEffect(() => {
     if (loading || !submissionId) return;
 
+    let isCancelled = false;
+
     const setupAntiCheat = async () => {
       const { data } = await supabase.auth.getSession();
       const userId = data.session?.user.id;
@@ -327,26 +506,29 @@ export function ExamInterface({
 
       const antiCheat = new AntiCheat(submissionId, userId, {
         maxTabSwitches: 3,
-        onViolation: () => {
-          setViolations((prev) => prev + 1);
-          toast({
-            title: 'Warning',
-            description: (
-              <div className="flex items-center gap-2">
-                <AlertTriangle className="h-4 w-4" />
-                <span>Suspicious activity detected. This will be recorded.</span>
-              </div>
-            ),
-            variant: 'destructive',
-          });
+        onViolation: (type) => {
+          handleViolationEvent(type);
         },
       });
 
+      if (isCancelled) return;
+
+      antiCheatRef.current = antiCheat;
+      await antiCheat.bootstrapFromSubmission();
       antiCheat.initialize();
+      setAntiCheatReady(true);
     };
 
     void setupAntiCheat();
-  }, [loading, submissionId, navigate, toast]);
+    return () => {
+      isCancelled = true;
+      setAntiCheatReady(false);
+      antiCheatRef.current?.cleanup();
+      antiCheatRef.current = null;
+      mediaProctorRef.current?.stop();
+      mediaProctorRef.current = null;
+    };
+  }, [loading, submissionId, navigate]);
 
   useEffect(() => {
     if (!submissionId || loading) return;
@@ -423,6 +605,18 @@ export function ExamInterface({
 
   useEffect(() => {
     if (loading || !submissionId) return;
+    if (!proctoringRequired) return;
+    if (proctoringConsent !== 'granted') return;
+    if (mediaProctorRef.current) return;
+    if (!antiCheatRef.current || !antiCheatReady) return;
+
+    void startMediaProctoring().catch((error) => {
+      console.error('Failed to resume media proctoring:', error);
+    });
+  }, [loading, submissionId, proctoringRequired, proctoringConsent, antiCheatReady]);
+
+  useEffect(() => {
+    if (loading || !submissionId) return;
     if (!startTimeRef.current || durationSecondsRef.current <= 0) return;
 
     const timer = window.setInterval(() => {
@@ -483,7 +677,7 @@ export function ExamInterface({
     }
 
     const response = await fetch(
-      `${import.meta.env.VITE_SUPABASE_URL || 'https://xrfiltyxdviefanplykg.supabase.co'}/functions/v1/grade-submission`,
+      `${SUPABASE_URL}/functions/v1/grade-submission`,
       {
         method: 'POST',
         headers: {
@@ -500,6 +694,8 @@ export function ExamInterface({
           violations_count: violations,
           autoSubmit: isAutoSubmit,
           auto_submit: isAutoSubmit,
+          proctoringConsent,
+          proctoringEnabled: proctoringStatus === 'active',
         }),
       }
     );
@@ -524,16 +720,24 @@ export function ExamInterface({
         throw new Error('Grading failed');
       }
 
+      mediaProctorRef.current?.stop();
+      mediaProctorRef.current = null;
+      antiCheatRef.current?.cleanup();
+      antiCheatRef.current = null;
+
       clearLocalProgress();
+      clearSubmissionLock();
       const isAdminUser = userDetails?.role === 'admin';
       const canShowScore = Boolean(result && (resultsReleased || isAdminUser));
       const message = canShowScore && result
         ? `Your answers have been recorded. Score: ${result.percentageScore.toFixed(1)}%`
         : 'Your answers have been recorded. Results will remain hidden until an admin releases them.';
-      toast({
-        title: isAutoSubmit ? "Time's up!" : 'Test submitted',
-        description: message,
-      });
+      if (isAdminUser) {
+        toast({
+          title: isAutoSubmit ? "Time's up!" : 'Test submitted',
+          description: message,
+        });
+      }
 
       navigate(isAdminUser ? '/results' : '/candidate-dashboard');
     } catch (error: any) {
@@ -591,6 +795,8 @@ export function ExamInterface({
   const isTimeLow = timeRemaining < 60;
   const questionOptions = currentQuestion && Array.isArray(currentQuestion.options) ? currentQuestion.options : [];
   const answeredCount = questions.reduce((total, question) => (answers[question.id] ? total + 1 : total), 0);
+  const isLastQuestion = questions.length > 0 && currentQuestionIndex >= questions.length - 1;
+  const canAdvance = Boolean(currentQuestion && answers[currentQuestion.id]);
 
   return (
     <div className="min-h-screen w-full bg-slate-50 p-4">
@@ -608,9 +814,50 @@ export function ExamInterface({
                 <p className="text-xs text-muted-foreground">{userDetails?.full_name || 'Candidate'}</p>
               </div>
             </div>
-            <div className={`flex items-center gap-2 p-2 rounded-md ${isTimeLow ? 'bg-red-50 text-red-600' : 'bg-blue-50 text-blue-600'}`}>
-              <Clock className="h-4 w-4" />
-              <span className="font-mono">{formatTime(timeRemaining)}</span>
+            <div className="flex items-center gap-2">
+              {proctoringRequired && (
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`text-xs px-2 py-1 rounded-md border ${
+                      proctoringStatus === 'active'
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                        : proctoringStatus === 'declined'
+                        ? 'bg-amber-50 text-amber-700 border-amber-200'
+                        : proctoringStatus === 'limited'
+                        ? 'bg-slate-100 text-slate-700 border-slate-200'
+                        : 'bg-slate-50 text-slate-600 border-slate-200'
+                    }`}
+                  >
+                    {proctoringStatus === 'active'
+                      ? 'Proctoring Active'
+                      : proctoringStatus === 'declined'
+                      ? 'Proctoring Declined'
+                      : proctoringStatus === 'limited'
+                      ? 'Proctoring Limited'
+                      : 'Proctoring Pending'}
+                  </span>
+                  {proctoringStatus !== 'active' && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={handleActivateProctoring}
+                      disabled={!antiCheatReady}
+                      className="h-8"
+                    >
+                      Activate Proctoring
+                    </Button>
+                  )}
+                </div>
+              )}
+              <div
+                className={`flex items-center gap-2 p-2 rounded-md ${
+                  isTimeLow ? 'bg-red-50 text-red-600' : 'bg-blue-50 text-blue-600'
+                }`}
+              >
+                <Clock className="h-4 w-4" />
+                <span className="font-mono">{formatTime(timeRemaining)}</span>
+              </div>
             </div>
           </div>
           <div className="flex justify-between items-center text-sm text-muted-foreground mt-2">
@@ -628,6 +875,9 @@ export function ExamInterface({
               )}
             </span>
           </div>
+          {proctoringRequired && proctoringNote && (
+            <p className="text-xs text-muted-foreground">{proctoringNote}</p>
+          )}
           <Progress value={progress} className="h-2" />
         </CardHeader>
         <CardContent className="pt-4 flex-1 overflow-y-auto lg:overflow-hidden">
@@ -716,22 +966,40 @@ export function ExamInterface({
             Previous
           </Button>
           <div className="flex gap-2">
-            {currentQuestionIndex === questions.length - 1 ? (
-              <Button
-                onClick={() => void handleSubmit()}
-                disabled={submitting || !currentQuestion || !answers[currentQuestion.id]}
-                className="bg-excelerate-600 hover:bg-excelerate-700"
-              >
-                {submitting ? 'Submitting...' : 'Submit Test'}
-              </Button>
-            ) : (
-              <Button onClick={handleNext} disabled={!currentQuestion || !answers[currentQuestion.id]}>
-                Next
-              </Button>
-            )}
+            <Button
+              onClick={isLastQuestion ? () => void handleSubmit() : handleNext}
+              disabled={isLastQuestion ? submitting : !canAdvance}
+              className={isLastQuestion ? 'bg-excelerate-600 hover:bg-excelerate-700' : undefined}
+            >
+              {isLastQuestion ? (submitting ? 'Submitting...' : 'Submit Exam') : 'Next'}
+            </Button>
           </div>
         </CardFooter>
       </Card>
+      <AlertDialog open={showProctoringConsentModal}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Camera and microphone consent</AlertDialogTitle>
+            <AlertDialogDescription>
+              This assessment requires camera and microphone proctoring to flag suspicious behavior. No audio or
+              video recordings are stored. If you continue without permission, the exam continues but the attempt is
+              flagged for admin review.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => void handleProctoringConsentDecline()}
+              disabled={!antiCheatReady}
+            >
+              Continue Without Proctoring
+            </Button>
+            <AlertDialogAction disabled={!antiCheatReady} onClick={() => void handleProctoringConsentGrant()}>
+              Allow Camera and Microphone
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog open={showAutoSubmitWarning} onOpenChange={setShowAutoSubmitWarning}>
         <AlertDialogContent>
           <AlertDialogHeader>

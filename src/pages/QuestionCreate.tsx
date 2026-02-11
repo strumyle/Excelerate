@@ -1,6 +1,6 @@
 
 import { useState, useEffect } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useToast } from '@/components/ui/use-toast';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -13,6 +13,8 @@ import { Trash, Plus, Save } from 'lucide-react';
 
 const QuestionCreate = () => {
   const { id } = useParams();
+  const [searchParams] = useSearchParams();
+  const forcedBank = searchParams.get('bank')?.trim() || '';
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const { toast } = useToast();
@@ -25,7 +27,7 @@ const QuestionCreate = () => {
     category: '',
     difficulty: 'Medium',
     points: 5,
-    test_type: '', // Assessment bucket
+    test_type: forcedBank, // Assessment bucket
   });
   
   const [categories, setCategories] = useState<string[]>([]);
@@ -56,13 +58,19 @@ const QuestionCreate = () => {
         const uniqueBuckets = Array.from(
           new Set(data.map((item: any) => item.test_type || 'Unassigned'))
         );
+        const bucketOptions =
+          forcedBank && !uniqueBuckets.includes(forcedBank)
+            ? [forcedBank, ...uniqueBuckets]
+            : uniqueBuckets;
         
         console.log('Unique categories:', uniqueCategories);
         setCategories(uniqueCategories as string[]);
-        setBuckets(uniqueBuckets as string[]);
+        setBuckets(bucketOptions as string[]);
 
-        if (!question.test_type && uniqueBuckets.length > 0) {
-          setQuestion((prev) => ({ ...prev, test_type: uniqueBuckets[0] }));
+        if (!id && forcedBank) {
+          setQuestion((prev) => ({ ...prev, test_type: forcedBank }));
+        } else if (bucketOptions.length > 0) {
+          setQuestion((prev) => (prev.test_type ? prev : { ...prev, test_type: bucketOptions[0] }));
         }
       } catch (error) {
         console.error('Error in fetchCategories:', error);
@@ -75,7 +83,13 @@ const QuestionCreate = () => {
     };
     
     fetchCategories();
-  }, [toast]);
+  }, [toast, id, forcedBank]);
+
+  useEffect(() => {
+    if (!id && forcedBank) {
+      setQuestion((prev) => ({ ...prev, test_type: forcedBank }));
+    }
+  }, [id, forcedBank]);
   
   // Fetch question if editing
   useEffect(() => {
@@ -201,6 +215,7 @@ const QuestionCreate = () => {
       const timestamp = new Date().toISOString();
       const questionData = {
         ...question,
+        test_type: forcedBank || question.test_type || null,
         options: cleanedOptions,
         updated_at: timestamp
       };
@@ -270,7 +285,7 @@ const QuestionCreate = () => {
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-3xl font-bold">
-          {id ? 'Edit Question' : 'Create New Question'}
+          {id ? 'Edit Question' : forcedBank ? `Create Question - ${forcedBank}` : 'Create New Question'}
         </h1>
       </div>
       
@@ -279,6 +294,11 @@ const QuestionCreate = () => {
           <CardTitle>Question Details</CardTitle>
         </CardHeader>
         <CardContent>
+          {forcedBank && !id && (
+            <div className="mb-4 rounded-md border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
+              New questions from this form will be saved to the <strong>{forcedBank}</strong> exam bank.
+            </div>
+          )}
           <form onSubmit={handleSubmit} className="space-y-6">
             <div className="space-y-2">
               <Label htmlFor="question-text">Question Text</Label>
@@ -401,13 +421,14 @@ const QuestionCreate = () => {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="test-type">Assessment Bucket</Label>
+                <Label htmlFor="test-type">Exam Bank</Label>
                 <Select
                   value={question.test_type}
                   onValueChange={(value) => setQuestion({ ...question, test_type: value })}
+                  disabled={Boolean(forcedBank) && !id}
                 >
                   <SelectTrigger>
-                    <SelectValue placeholder="Select assessment bucket" />
+                    <SelectValue placeholder="Select exam bank" />
                   </SelectTrigger>
                   <SelectContent>
                     {buckets.map((bucketOption) => (
@@ -419,23 +440,25 @@ const QuestionCreate = () => {
                 </Select>
               </div>
               
-              <div className="space-y-2 md:col-span-2">
-                <Label>New Assessment Bucket</Label>
-                <div className="flex gap-2">
-                  <Input
-                    value={newBucket}
-                    onChange={(e) => setNewBucket(e.target.value)}
-                    placeholder="Enter new bucket name"
-                  />
-                  <Button 
-                    type="button"
-                    onClick={handleBucketAdd}
-                    disabled={!newBucket.trim() || buckets.includes(newBucket.trim())}
-                  >
-                    Add
-                  </Button>
+              {(!forcedBank || id) && (
+                <div className="space-y-2 md:col-span-2">
+                  <Label>New Exam Bank</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      value={newBucket}
+                      onChange={(e) => setNewBucket(e.target.value)}
+                      placeholder="Enter new exam bank name"
+                    />
+                    <Button 
+                      type="button"
+                      onClick={handleBucketAdd}
+                      disabled={!newBucket.trim() || buckets.includes(newBucket.trim())}
+                    >
+                      Add
+                    </Button>
+                  </div>
                 </div>
-              </div>
+              )}
               
               <div className="space-y-2 md:col-span-2">
                 <Label>New Category</Label>

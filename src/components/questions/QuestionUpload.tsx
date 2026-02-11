@@ -20,18 +20,23 @@ interface ParsedQuestion {
   points: number;
 }
 
-export function QuestionUpload() {
+interface QuestionUploadProps {
+  forcedBank?: string;
+}
+
+export function QuestionUpload({ forcedBank }: QuestionUploadProps) {
   const [file, setFile] = useState<File | null>(null);
   const [jsonContent, setJsonContent] = useState('');
   const [uploading, setUploading] = useState(false);
   const [parseErrors, setParseErrors] = useState<string[]>([]);
   const { toast } = useToast();
+  const sampleBank = forcedBank || 'Assessment 1';
 
   // CSV Template content
   const csvTemplate = `text,option_a,option_b,option_c,option_d,correct_answer,category,difficulty,test_type,points
-"What is the keyboard shortcut to copy cells in Excel?","Ctrl+C","Ctrl+V","Ctrl+X","Ctrl+Z","Ctrl+C","Shortcuts","Easy","Assessment 1",5
-"Which function returns the average of a range?","SUM","AVERAGE","COUNT","MAX","AVERAGE","Functions","Easy","Assessment 1",5
-"What does the VLOOKUP function do?","Counts cells","Looks up values vertically","Sums values","Finds maximum","Looks up values vertically","Functions","Medium","Assessment 1",10`;
+"What is the keyboard shortcut to copy cells in Excel?","Ctrl+C","Ctrl+V","Ctrl+X","Ctrl+Z","Ctrl+C","Shortcuts","Easy","${sampleBank}",5
+"Which function returns the average of a range?","SUM","AVERAGE","COUNT","MAX","AVERAGE","Functions","Easy","${sampleBank}",5
+"What does the VLOOKUP function do?","Counts cells","Looks up values vertically","Sums values","Finds maximum","Looks up values vertically","Functions","Medium","${sampleBank}",10`;
 
   const downloadCsvTemplate = () => {
     const blob = new Blob([csvTemplate], { type: 'text/csv;charset=utf-8;' });
@@ -122,7 +127,7 @@ export function QuestionUpload() {
           correct_answer: rowData.correct_answer,
           category: rowData.category || 'General',
           difficulty: rowData.difficulty || 'Medium',
-          test_type: rowData.test_type || 'General',
+          test_type: forcedBank || rowData.test_type || 'General',
           points: parseInt(rowData.points) || 5
         });
       } catch (err) {
@@ -269,7 +274,7 @@ export function QuestionUpload() {
           correct_answer: q.correct_answer,
           category: q.category,
           difficulty: q.difficulty || 'Medium',
-          test_type: q.test_type || 'General',
+          test_type: forcedBank || q.test_type || 'General',
           points: q.points || 5,
         }));
       } else {
@@ -370,7 +375,7 @@ export function QuestionUpload() {
         category: q.category,
         difficulty: q.difficulty || 'Medium',
         points: q.points || 5,
-        test_type: q.test_type || 'General',
+        test_type: forcedBank || q.test_type || 'General',
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       }));
@@ -411,7 +416,7 @@ export function QuestionUpload() {
       "correct_answer": "MAX",
       "category": "Functions",
       "difficulty": "Easy",
-      "test_type": "Assessment 1",
+      "test_type": "${sampleBank}",
       "points": 5
     }
   ], null, 2);
@@ -436,6 +441,14 @@ export function QuestionUpload() {
         </CardDescription>
       </CardHeader>
       <CardContent>
+        {forcedBank && (
+          <Alert className="mb-4">
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription>
+              Upload target is locked to <strong>{forcedBank}</strong>. Uploaded questions will be saved to this exam bank.
+            </AlertDescription>
+          </Alert>
+        )}
         <Tabs defaultValue="file">
           <TabsList className="grid w-full grid-cols-2">
             <TabsTrigger value="file">Upload File</TabsTrigger>

@@ -29,7 +29,7 @@ import {
 } from '@/components/ui/select';
 import { Question } from '@/lib/supabase';
 import { Edit, Trash2, Search, Plus, Download } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useToast } from '@/components/ui/use-toast';
 
 export function QuestionsList() {
@@ -45,7 +45,11 @@ export function QuestionsList() {
   const [renameFrom, setRenameFrom] = useState('');
   const [renameTo, setRenameTo] = useState('');
   const [renaming, setRenaming] = useState(false);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [wizardStep, setWizardStep] = useState<1 | 2>(1);
+  const [wizardBankName, setWizardBankName] = useState('');
   const { toast } = useToast();
+  const navigate = useNavigate();
 
   useEffect(() => {
     fetchQuestions();
@@ -189,16 +193,16 @@ export function QuestionsList() {
     const trimmed = renameTo.trim();
     if (!renameFrom) {
       toast({
-        title: 'Select a bucket',
-        description: 'Choose a bucket to rename.',
+        title: 'Select an exam bank',
+        description: 'Choose an exam bank to rename.',
         variant: 'destructive',
       });
       return;
     }
     if (!trimmed) {
       toast({
-        title: 'Missing bucket name',
-        description: 'Enter the new bucket name.',
+        title: 'Missing exam bank name',
+        description: 'Enter the new exam bank name.',
         variant: 'destructive',
       });
       return;
@@ -206,7 +210,7 @@ export function QuestionsList() {
     if (renameFrom === trimmed) {
       toast({
         title: 'No changes',
-        description: 'The new bucket name matches the current one.',
+        description: 'The new exam bank name matches the current one.',
       });
       return;
     }
@@ -224,7 +228,7 @@ export function QuestionsList() {
       if (error) throw error;
 
       toast({
-        title: 'Bucket renamed',
+        title: 'Exam bank renamed',
         description: `Updated ${renameFrom} to ${trimmed}.`,
       });
 
@@ -239,7 +243,7 @@ export function QuestionsList() {
       console.error('Error renaming bucket:', error);
       toast({
         title: 'Rename failed',
-        description: 'Unable to rename the bucket right now.',
+        description: 'Unable to rename the exam bank right now.',
         variant: 'destructive',
       });
     } finally {
@@ -247,11 +251,83 @@ export function QuestionsList() {
     }
   };
 
+  const openWizard = (open: boolean) => {
+    setWizardOpen(open);
+    if (!open) {
+      setWizardStep(1);
+      setWizardBankName('');
+    }
+  };
+
+  const proceedWizard = () => {
+    if (!wizardBankName.trim()) {
+      toast({
+        title: 'Missing exam bank name',
+        description: 'Enter an exam bank name before continuing.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    setWizardStep(2);
+  };
+
+  const goToWizardTarget = (path: '/questions/create' | '/questions/upload') => {
+    const trimmed = wizardBankName.trim();
+    if (!trimmed) return;
+    setWizardOpen(false);
+    navigate(`${path}?bank=${encodeURIComponent(trimmed)}`);
+  };
+
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle>Questions Library</CardTitle>
         <div className="flex flex-wrap items-center gap-2">
+          <Dialog open={wizardOpen} onOpenChange={openWizard}>
+            <DialogTrigger asChild>
+              <Button variant="default">New Exam Bank Wizard</Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>
+                  {wizardStep === 1 ? 'Step 1: Name Exam Bank' : 'Step 2: Add Questions'}
+                </DialogTitle>
+              </DialogHeader>
+              {wizardStep === 1 ? (
+                <div className="space-y-4">
+                  <div>
+                    <Label htmlFor="wizard-bank-name">Exam Bank Name</Label>
+                    <Input
+                      id="wizard-bank-name"
+                      value={wizardBankName}
+                      onChange={(event) => setWizardBankName(event.target.value)}
+                      placeholder="e.g. Excel Assessment 2026"
+                    />
+                  </div>
+                  <Button onClick={proceedWizard} className="w-full">
+                    Continue
+                  </Button>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <p className="text-sm text-muted-foreground">
+                    You are creating the <strong>{wizardBankName.trim()}</strong> exam bank. Choose how to add questions.
+                  </p>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <Button onClick={() => goToWizardTarget('/questions/create')}>
+                      Manual Entry
+                    </Button>
+                    <Button variant="outline" onClick={() => goToWizardTarget('/questions/upload')}>
+                      Bulk Upload
+                    </Button>
+                  </div>
+                  <Button variant="ghost" onClick={() => setWizardStep(1)} className="w-full">
+                    Back
+                  </Button>
+                </div>
+              )}
+            </DialogContent>
+          </Dialog>
           <Dialog
             open={renameOpen}
             onOpenChange={(open) => {
@@ -262,18 +338,18 @@ export function QuestionsList() {
             }}
           >
             <DialogTrigger asChild>
-              <Button variant="outline">Rename Bucket</Button>
+              <Button variant="outline">Rename Exam Bank</Button>
             </DialogTrigger>
             <DialogContent>
               <DialogHeader>
-                <DialogTitle>Rename Assessment Bucket</DialogTitle>
+                <DialogTitle>Rename Exam Bank</DialogTitle>
               </DialogHeader>
               <div className="space-y-4">
                 <div>
-                  <Label htmlFor="rename-from">Current Bucket</Label>
+                  <Label htmlFor="rename-from">Current Exam Bank</Label>
                   <Select value={renameFrom} onValueChange={setRenameFrom}>
                     <SelectTrigger id="rename-from">
-                      <SelectValue placeholder="Select bucket" />
+                      <SelectValue placeholder="Select exam bank" />
                     </SelectTrigger>
                     <SelectContent>
                       {buckets.map((bucketOption) => (
@@ -285,16 +361,16 @@ export function QuestionsList() {
                   </Select>
                 </div>
                 <div>
-                  <Label htmlFor="rename-to">New Bucket Name</Label>
+                  <Label htmlFor="rename-to">New Exam Bank Name</Label>
                   <Input
                     id="rename-to"
                     value={renameTo}
                     onChange={(event) => setRenameTo(event.target.value)}
-                    placeholder="Enter new bucket name"
+                    placeholder="Enter new exam bank name"
                   />
                 </div>
                 <Button onClick={handleRenameBucket} disabled={renaming}>
-                  {renaming ? 'Renaming...' : 'Rename Bucket'}
+                  {renaming ? 'Renaming...' : 'Rename Exam Bank'}
                 </Button>
               </div>
             </DialogContent>
@@ -327,10 +403,10 @@ export function QuestionsList() {
           </div>
           <Select value={bucket} onValueChange={setBucket}>
             <SelectTrigger className="w-full md:w-[200px]">
-              <SelectValue placeholder="Assessment Bucket" />
+              <SelectValue placeholder="Exam Bank" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Buckets</SelectItem>
+              <SelectItem value="all">All Exam Banks</SelectItem>
               {buckets.map((bucketOption) => (
                 <SelectItem key={bucketOption} value={bucketOption}>
                   {bucketOption}
@@ -363,7 +439,7 @@ export function QuestionsList() {
                 <TableRow>
                   <TableHead className="w-[45%]">Question</TableHead>
                   <TableHead>Category</TableHead>
-                  <TableHead>Assessment Bucket</TableHead>
+                  <TableHead>Exam Bank</TableHead>
                   <TableHead>Difficulty</TableHead>
                   <TableHead>Points</TableHead>
                   <TableHead className="w-[100px]">Actions</TableHead>

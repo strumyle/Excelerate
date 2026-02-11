@@ -68,6 +68,10 @@ export async function startScormPackage(packageId: string) {
     throw error;
   }
 
+  if (!data?.attempt_id) {
+    throw new Error('SCORM start response is missing attempt_id.');
+  }
+
   return data;
 }
 

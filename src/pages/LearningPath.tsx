@@ -19,6 +19,7 @@ export default function LearningPath() {
   const [scormPackages, setScormPackages] = useState<any[]>([]);
   const [certificates, setCertificates] = useState<Record<string, Certificate>>({});
   const [loading, setLoading] = useState(true);
+  const [enrollingCourseId, setEnrollingCourseId] = useState<string | null>(null);
   const [generatingCert, setGeneratingCert] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'enrolled' | 'scorm' | 'available' | 'search'>('enrolled');
   const navigate = useNavigate();
@@ -65,14 +66,37 @@ export default function LearningPath() {
     }
   };
 
-  const handleEnroll = async (courseId: string) => {
-    try {
-      await enrollInCourse(courseId);
+  const handleEnroll = async (courseId: string, alreadyEnrolled = false) => {
+    if (alreadyEnrolled) {
       toast({
-        title: "Success",
-        description: "Successfully enrolled in course"
+        title: "Enrolled",
+        description: "You are already enrolled in this course."
       });
-      loadData(); // Reload data
+      return;
+    }
+
+    try {
+      setEnrollingCourseId(courseId);
+      const result = await enrollInCourse(courseId);
+
+      if (result.alreadyEnrolled) {
+        toast({
+          title: "Enrolled",
+          description: "You are already enrolled in this course."
+        });
+      } else {
+        toast({
+          title: "Success",
+          description: "Successfully enrolled in course"
+        });
+      }
+
+      setAvailableCourses((prev) =>
+        prev.map((course) =>
+          course.id === courseId ? { ...course, is_enrolled: true } : course
+        )
+      );
+      await loadData();
     } catch (error) {
       console.error('Error enrolling:', error);
       toast({
@@ -80,6 +104,8 @@ export default function LearningPath() {
         description: "Failed to enroll in course",
         variant: "destructive"
       });
+    } finally {
+      setEnrollingCourseId(null);
     }
   };
 
@@ -183,6 +209,11 @@ export default function LearningPath() {
                 const progress = enrollment.percent_complete || 0;
                 const isCompleted = progress >= 100;
                 const hasCertificate = certificates[enrollment.course_id];
+                const canOpenCourse = Boolean(
+                  enrollment.course_id &&
+                  enrollment.course_id !== 'null' &&
+                  enrollment.course_id !== 'undefined'
+                );
                 
                 return (
                   <Card key={enrollment.enrollment_id} className="hover:shadow-lg transition-shadow">
@@ -222,9 +253,20 @@ export default function LearningPath() {
                       
                       <div className="flex gap-2">
                         <Button
-                          onClick={() => navigate(`/courses/${enrollment.course_id}`)}
+                          onClick={() => {
+                            if (canOpenCourse) {
+                              navigate(`/courses/${enrollment.course_id}`);
+                              return;
+                            }
+                            toast({
+                              title: "Course unavailable",
+                              description: "This enrollment is missing a valid course reference.",
+                              variant: "destructive",
+                            });
+                          }}
                           className="flex-1"
                           variant={isCompleted ? "secondary" : "default"}
+                          disabled={!canOpenCourse}
                         >
                           {isCompleted ? "Review" : "Continue"}
                         </Button>
@@ -281,52 +323,71 @@ export default function LearningPath() {
         <TabsContent value="available">
           {availableCourses.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {availableCourses.map((course) => (
-                <Card key={course.id} className="hover:shadow-lg transition-shadow">
-                  {course.thumbnail_url && (
-                    <div className="aspect-video w-full bg-muted rounded-t-lg overflow-hidden">
-                      <img 
-                        src={course.thumbnail_url} 
-                        alt={course.title}
-                        className="w-full h-full object-cover"
-                      />
-                    </div>
-                  )}
-                  <CardHeader>
-                    <CardTitle className="text-lg">{course.title}</CardTitle>
-                    <CardDescription>{course.description}</CardDescription>
-                    <div className="flex gap-2 mt-2">
-                      {course.category && (
-                        <Badge variant="secondary" className="text-xs">
-                          {course.category}
-                        </Badge>
-                      )}
-                      {course.level && (
-                        <Badge variant="outline" className="text-xs">
-                          {course.level}
-                        </Badge>
-                      )}
-                    </div>
-                  </CardHeader>
-                  <CardContent>
-                    <Button
-                      onClick={() => handleEnroll(course.id)}
-                      className="w-full"
-                      variant="outline"
-                    >
-                      <Plus className="h-4 w-4 mr-2" />
-                      Enroll Now
-                    </Button>
-                  </CardContent>
-                </Card>
-              ))}
+              {availableCourses.map((course) => {
+                const isEnrolled = Boolean(course.is_enrolled);
+                const isLoadingEnrollment = enrollingCourseId === course.id;
+
+                return (
+                  <Card key={course.id} className="hover:shadow-lg transition-shadow">
+                    {course.thumbnail_url && (
+                      <div className="aspect-video w-full bg-muted rounded-t-lg overflow-hidden">
+                        <img 
+                          src={course.thumbnail_url} 
+                          alt={course.title}
+                          className="w-full h-full object-cover"
+                        />
+                      </div>
+                    )}
+                    <CardHeader>
+                      <CardTitle className="text-lg">{course.title}</CardTitle>
+                      <CardDescription>{course.description}</CardDescription>
+                      <div className="flex gap-2 mt-2">
+                        {course.category && (
+                          <Badge variant="secondary" className="text-xs">
+                            {course.category}
+                          </Badge>
+                        )}
+                        {course.level && (
+                          <Badge variant="outline" className="text-xs">
+                            {course.level}
+                          </Badge>
+                        )}
+                        {isEnrolled && (
+                          <Badge className="text-xs">
+                            Enrolled
+                          </Badge>
+                        )}
+                      </div>
+                    </CardHeader>
+                    <CardContent>
+                      <Button
+                        onClick={() => handleEnroll(course.id, isEnrolled)}
+                        className="w-full"
+                        variant={isEnrolled ? "secondary" : "outline"}
+                        disabled={isLoadingEnrollment}
+                      >
+                        {isLoadingEnrollment ? (
+                          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-current"></div>
+                        ) : isEnrolled ? (
+                          "Enrolled"
+                        ) : (
+                          <>
+                            <Plus className="h-4 w-4 mr-2" />
+                            Enroll Now
+                          </>
+                        )}
+                      </Button>
+                    </CardContent>
+                  </Card>
+                );
+              })}
             </div>
           ) : (
             <div className="text-center py-12">
               <BookOpen className="h-16 w-16 text-muted-foreground mx-auto mb-4" />
-              <h3 className="text-xl font-semibold mb-2">No available courses</h3>
+              <h3 className="text-xl font-semibold mb-2">No published courses</h3>
               <p className="text-muted-foreground">
-                All published courses are either enrolled or completed.
+                No active published courses are available at the moment.
               </p>
             </div>
           )}

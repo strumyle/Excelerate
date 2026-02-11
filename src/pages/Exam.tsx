@@ -22,6 +22,34 @@ interface SubmissionContext {
 
 const SPECIAL_ADMIN_ID = '600a8af2-9ccf-4c55-b351-a14e2b5b2221';
 const SPECIAL_ADMIN_EMAIL = 'ameh.oche@babbangona.com';
+const getSubmissionLockKey = (submissionId: string) => `active_exam_submission_${submissionId}`;
+const getSubmissionProgressKey = (submissionId: string) => `exam_progress_${submissionId}`;
+const isMissingRetryColumnError = (error: unknown) => {
+  const message = String((error as { message?: string })?.message || '').toLowerCase();
+  return (
+    message.includes('remaining_attempts') ||
+    message.includes('granted_attempts') ||
+    (message.includes('column') && message.includes('does not exist'))
+  );
+};
+
+const hasSubmissionLock = (submissionId: string) => {
+  try {
+    const explicitLock = localStorage.getItem(getSubmissionLockKey(submissionId)) === '1';
+    const hasProgressSnapshot = localStorage.getItem(getSubmissionProgressKey(submissionId)) !== null;
+    return explicitLock || hasProgressSnapshot;
+  } catch {
+    return false;
+  }
+};
+
+const setSubmissionLock = (submissionId: string) => {
+  try {
+    localStorage.setItem(getSubmissionLockKey(submissionId), '1');
+  } catch {
+    // Ignore local storage failures.
+  }
+};
 
 const Exam = () => {
   const { testId } = useParams();
@@ -156,8 +184,15 @@ const Exam = () => {
 
     const inProgress = inProgressRows?.[0];
     if (inProgress) {
+      if (!hasSubmissionLock(inProgress.id)) {
+        throw new Error(
+          'This assessment is already in progress on another device. Please continue from the original device.'
+        );
+      }
+
       const lockedQuestionIds = (inProgress.question_ids || []).filter(Boolean) as string[];
       if (lockedQuestionIds.length > 0) {
+        setSubmissionLock(inProgress.id);
         return { submissionId: inProgress.id, questionIds: lockedQuestionIds };
       }
 
@@ -177,6 +212,7 @@ const Exam = () => {
 
       if (fixError) throw new Error(fixError.message);
 
+      setSubmissionLock(inProgress.id);
       return { submissionId: inProgress.id, questionIds: fallbackSample };
     }
 
@@ -190,24 +226,50 @@ const Exam = () => {
 
     if (completedError) throw new Error(completedError.message);
 
-    let consumedRetakePermissionId: string | null = null;
+    let consumedRetakePermission: { id: string; remainingAttempts: number | null } | null = null;
     if ((completedRows || []).length > 0) {
       const { data: permissionRows, error: permissionError } = await supabase
         .from('test_retake_permissions')
-        .select('id')
+        .select('id, remaining_attempts')
         .eq('user_id', userId)
         .eq('test_id', assignment.test_id)
+        .gt('remaining_attempts', 0)
         .order('granted_at', { ascending: true })
         .limit(1);
 
-      if (permissionError) throw new Error(permissionError.message);
+      if (!permissionError) {
+        const permission = permissionRows?.[0];
+        if (!permission) {
+          throw new Error('You have already completed this assigned assessment. Retake permission is required.');
+        }
 
-      const permission = permissionRows?.[0];
-      if (!permission) {
-        throw new Error('You have already completed this assigned assessment. Retake permission is required.');
+        consumedRetakePermission = {
+          id: permission.id,
+          remainingAttempts: Number(permission.remaining_attempts || 0),
+        };
+      } else if (isMissingRetryColumnError(permissionError)) {
+        const { data: legacyPermissionRows, error: legacyPermissionError } = await supabase
+          .from('test_retake_permissions')
+          .select('id')
+          .eq('user_id', userId)
+          .eq('test_id', assignment.test_id)
+          .order('granted_at', { ascending: true })
+          .limit(1);
+
+        if (legacyPermissionError) throw new Error(legacyPermissionError.message);
+
+        const legacyPermission = legacyPermissionRows?.[0];
+        if (!legacyPermission) {
+          throw new Error('You have already completed this assigned assessment. Retake permission is required.');
+        }
+
+        consumedRetakePermission = {
+          id: legacyPermission.id,
+          remainingAttempts: null,
+        };
+      } else {
+        throw new Error(permissionError.message);
       }
-
-      consumedRetakePermissionId = permission.id;
     }
 
     const desiredCount =
@@ -228,6 +290,8 @@ const Exam = () => {
         user_id: userId,
         start_time: new Date().toISOString(),
         status: 'in_progress',
+        proctoring_enabled: false,
+        proctoring_consent: 'unknown',
       })
       .select('id, question_ids')
       .limit(1);
@@ -236,16 +300,32 @@ const Exam = () => {
     const inserted = insertedRows?.[0];
     if (!inserted) throw new Error('Failed to create a submission.');
 
-    if (consumedRetakePermissionId) {
-      const { error: deleteError } = await supabase
-        .from('test_retake_permissions')
-        .delete()
-        .eq('id', consumedRetakePermissionId);
-      if (deleteError) {
-        console.error('Failed to consume retake permission:', deleteError);
+    if (consumedRetakePermission) {
+      if (
+        consumedRetakePermission.remainingAttempts === null ||
+        consumedRetakePermission.remainingAttempts <= 1
+      ) {
+        const { error: deleteError } = await supabase
+          .from('test_retake_permissions')
+          .delete()
+          .eq('id', consumedRetakePermission.id);
+        if (deleteError) {
+          console.error('Failed to consume retake permission:', deleteError);
+        }
+      } else {
+        const { error: decrementError } = await supabase
+          .from('test_retake_permissions')
+          .update({
+            remaining_attempts: consumedRetakePermission.remainingAttempts - 1,
+          })
+          .eq('id', consumedRetakePermission.id);
+        if (decrementError) {
+          console.error('Failed to decrement retake permission:', decrementError);
+        }
       }
     }
 
+    setSubmissionLock(inserted.id);
     return {
       submissionId: inserted.id,
       questionIds: ((inserted.question_ids || []) as string[]).filter(Boolean),
@@ -297,6 +377,8 @@ const Exam = () => {
         user_id: userId,
         start_time: new Date().toISOString(),
         status: 'in_progress',
+        proctoring_enabled: false,
+        proctoring_consent: 'unknown',
       })
       .select('id')
       .limit(1);
@@ -328,6 +410,7 @@ const Exam = () => {
 
     const test = await getTestById(assignment.test_id);
     const submission = await ensureCandidateSubmission(userId, assignment, test);
+    setSubmissionLock(submission.submissionId);
 
     setAssignedTest(test);
     setSubmissionId(submission.submissionId);

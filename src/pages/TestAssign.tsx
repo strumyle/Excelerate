@@ -49,6 +49,17 @@ interface SubmissionRow {
   violations: any[] | null;
 }
 
+interface RetakePermissionRow {
+  user_id: string;
+  test_id: string;
+  remaining_attempts: number | null;
+}
+
+interface LegacyRetakePermissionRow {
+  user_id: string;
+  test_id: string;
+}
+
 interface AssignmentResult {
   created: number;
   updated: number;
@@ -63,7 +74,8 @@ export default function TestAssign() {
   const [units, setUnits] = useState<string[]>([]);
   const [assignments, setAssignments] = useState<AssignmentRow[]>([]);
   const [submissions, setSubmissions] = useState<SubmissionRow[]>([]);
-  const [retakePermissions, setRetakePermissions] = useState<Set<string>>(new Set());
+  const [retakePermissions, setRetakePermissions] = useState<Map<string, number>>(new Map());
+  const [retakeDrafts, setRetakeDrafts] = useState<Record<string, string>>({});
 
   const [selectedUnitTestId, setSelectedUnitTestId] = useState<string>('');
   const [selectedUnit, setSelectedUnit] = useState<string>('');
@@ -126,32 +138,58 @@ export default function TestAssign() {
       setCsvQuestionCount(String(defaultCount));
     }
   }, [selectedCsvTestId, testsById]);
+
+  const normalizeComparable = (value?: string | null) => (value || '').trim().toLowerCase();
+  const normalizeEmail = (value?: string | null) => (value || '').trim().toLowerCase();
+  const isMissingRetryColumnError = (error: unknown) => {
+    const message = String((error as { message?: string })?.message || '').toLowerCase();
+    return (
+      message.includes('remaining_attempts') ||
+      message.includes('granted_attempts') ||
+      (message.includes('column') && message.includes('does not exist'))
+    );
+  };
+
+  const fetchAllUsers = async (): Promise<User[]> => {
+    const pageSize = 1000;
+    let from = 0;
+    const collected: User[] = [];
+
+    while (true) {
+      const { data, error } = await supabase
+        .from('users')
+        .select('id, email, full_name, role, unit, user_group')
+        .range(from, from + pageSize - 1);
+
+      if (error) throw error;
+
+      const page = (data || []) as unknown as User[];
+      collected.push(...page);
+      if (page.length < pageSize) break;
+      from += pageSize;
+    }
+
+    return collected;
+  };
+
   const fetchData = async () => {
     setIsLoading(true);
     try {
-      const [{ data: testsData, error: testsError }, { data: usersData, error: usersError }] =
-        await Promise.all([
-          supabase.from('tests').select('*').order('created_at', { ascending: false }),
-          supabase.from('users').select('id, email, full_name, role, unit, user_group'),
-        ]);
+      const [{ data: testsData, error: testsError }, usersData] = await Promise.all([
+        supabase.from('tests').select('*').order('created_at', { ascending: false }),
+        fetchAllUsers(),
+      ]);
 
       if (testsError) throw new Error(testsError.message);
+      const typedUsers = usersData;
+      setUsers(typedUsers);
 
-      if (usersError) {
-        console.error('Error fetching users:', usersError);
-        setUsers([]);
-        setUnits([]);
-      } else {
-        const typedUsers = (usersData || []) as unknown as User[];
-        setUsers(typedUsers);
-
-        const unitSet = new Set<string>();
-        typedUsers.forEach((user) => {
-          if (user.unit) unitSet.add(user.unit);
-          if (user.user_group) unitSet.add(user.user_group);
-        });
-        setUnits(Array.from(unitSet).sort((a, b) => a.localeCompare(b)));
-      }
+      const unitSet = new Set<string>();
+      typedUsers.forEach((user) => {
+        if (user.unit?.trim()) unitSet.add(user.unit.trim());
+        if (user.user_group?.trim()) unitSet.add(user.user_group.trim());
+      });
+      setUnits(Array.from(unitSet).sort((a, b) => a.localeCompare(b)));
 
       setTests((testsData || []) as unknown as Test[]);
       await fetchAssignments();
@@ -206,21 +244,52 @@ export default function TestAssign() {
       if (userIds.length > 0 && testIds.length > 0) {
         const { data: retakeData, error: retakeError } = await supabase
           .from('test_retake_permissions')
-          .select('user_id, test_id')
+          .select('user_id, test_id, remaining_attempts')
           .in('user_id', userIds)
           .in('test_id', testIds);
 
-        if (retakeError) {
-          console.error('Error fetching retake permissions:', retakeError);
-          setRetakePermissions(new Set());
-        } else {
-          const next = new Set(
-            (retakeData || []).map((row) => `${row.user_id}:${row.test_id}`)
-          );
+        if (!retakeError) {
+          const next = new Map<string, number>();
+          (retakeData as RetakePermissionRow[] | null)?.forEach((row) => {
+            const attempts =
+              Number.isFinite(row.remaining_attempts) && (row.remaining_attempts || 0) > 0
+                ? Number(row.remaining_attempts)
+                : 0;
+            if (attempts > 0) {
+              next.set(`${row.user_id}:${row.test_id}`, attempts);
+            }
+          });
           setRetakePermissions(next);
+          setRetakeDrafts((prev) => {
+            const draftEntries = Object.entries(prev).filter(([key]) =>
+              next.has(key) || assignmentRows.some((row) => `${row.user_id}:${row.test_id}` === key)
+            );
+            return Object.fromEntries(draftEntries);
+          });
+        } else if (isMissingRetryColumnError(retakeError)) {
+          const { data: legacyRetakeData, error: legacyRetakeError } = await supabase
+            .from('test_retake_permissions')
+            .select('user_id, test_id')
+            .in('user_id', userIds)
+            .in('test_id', testIds);
+
+          if (legacyRetakeError) {
+            console.error('Error fetching legacy retake permissions:', legacyRetakeError);
+            setRetakePermissions(new Map());
+          } else {
+            const next = new Map<string, number>();
+            (legacyRetakeData as LegacyRetakePermissionRow[] | null)?.forEach((row) => {
+              next.set(`${row.user_id}:${row.test_id}`, 1);
+            });
+            setRetakePermissions(next);
+          }
+        } else {
+          console.error('Error fetching retake permissions:', retakeError);
+          setRetakePermissions(new Map());
         }
       } else {
-        setRetakePermissions(new Set());
+        setRetakePermissions(new Map());
+        setRetakeDrafts({});
       }
     } catch (error) {
       console.error('Error fetching assignments:', error);
@@ -235,7 +304,7 @@ export default function TestAssign() {
 
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     const emails = tokens
-      .map((value) => value.toLowerCase())
+      .map((value) => normalizeEmail(value))
       .filter((value) => emailRegex.test(value));
 
     return Array.from(new Set(emails));
@@ -477,23 +546,13 @@ export default function TestAssign() {
       return;
     }
 
-    let unitUsers = users.filter(
-      (user) =>
-        (user.unit === selectedUnit || user.user_group === selectedUnit) &&
-        user.role !== 'admin'
-    );
-
-    if (unitUsers.length === 0) {
-      const safeUnit = selectedUnit.replace(/"/g, '\\"');
-      const { data: fetchedUnitUsers, error: fetchedUnitUsersError } = await supabase
-        .from('users')
-        .select('id, email, full_name, role, unit, user_group')
-        .or(`unit.eq."${safeUnit}",user_group.eq."${safeUnit}"`);
-
-      if (!fetchedUnitUsersError && fetchedUnitUsers) {
-        unitUsers = (fetchedUnitUsers as User[]).filter((user) => user.role !== 'admin');
-      }
-    }
+    const normalizedSelectedUnit = normalizeComparable(selectedUnit);
+    const unitUsers = users.filter((user) => {
+      const sameUnit =
+        normalizeComparable(user.unit) === normalizedSelectedUnit ||
+        normalizeComparable(user.user_group) === normalizedSelectedUnit;
+      return sameUnit && user.role !== 'admin';
+    });
 
     if (unitUsers.length === 0) {
       toast({
@@ -583,30 +642,13 @@ export default function TestAssign() {
       });
       return;
     }
-    const usersByEmail = new Map(users.map((user) => [user.email.toLowerCase(), user]));
-    let matchedUsers = csvEmails
-      .map((email) => usersByEmail.get(email))
+    const usersByEmail = new Map(users.map((user) => [normalizeEmail(user.email), user]));
+    const matchedUsers = csvEmails
+      .map((email) => usersByEmail.get(normalizeEmail(email)))
       .filter((user): user is User => Boolean(user))
       .filter((user) => user.role !== 'admin');
 
-    if (matchedUsers.length < csvEmails.length) {
-      const { data: fetchedUsers, error: fetchedUsersError } = await supabase
-        .from('users')
-        .select('id, email, full_name, role, unit, user_group')
-        .in('email', csvEmails);
-
-      if (!fetchedUsersError && fetchedUsers) {
-        const fetchedByEmail = new Map(
-          (fetchedUsers as User[]).map((user) => [user.email.toLowerCase(), user])
-        );
-        matchedUsers = csvEmails
-          .map((email) => fetchedByEmail.get(email) || usersByEmail.get(email))
-          .filter((user): user is User => Boolean(user))
-          .filter((user) => user.role !== 'admin');
-      }
-    }
-
-    const matchedEmailSet = new Set(matchedUsers.map((user) => user.email.toLowerCase()));
+    const matchedEmailSet = new Set(matchedUsers.map((user) => normalizeEmail(user.email)));
     const missingEmails = csvEmails.filter((email) => !matchedEmailSet.has(email));
 
     if (matchedUsers.length === 0) {
@@ -710,7 +752,7 @@ export default function TestAssign() {
         latestSubmission?.created_at ||
         assignment.created_at;
       const key = `${assignment.user_id}:${assignment.test_id}`;
-      const retakeAllowed = retakePermissions.has(key);
+      const retakeRemaining = retakePermissions.get(key) || 0;
 
       return {
         assignment,
@@ -718,7 +760,7 @@ export default function TestAssign() {
         test,
         status,
         lastActivity,
-        retakeAllowed,
+        retakeRemaining,
       };
     });
   }, [assignments, usersById, testsById, latestSubmissionByAssignment, retakePermissions]);
@@ -777,11 +819,25 @@ export default function TestAssign() {
     }
   };
 
-  const toggleRetakePermission = async (userId: string, testId: string, currentValue: boolean) => {
+  const handleRetakeDraftChange = (key: string, nextValue: string) => {
+    if (nextValue !== '' && !/^\d+$/.test(nextValue)) return;
+    setRetakeDrafts((prev) => ({
+      ...prev,
+      [key]: nextValue,
+    }));
+  };
+
+  const saveRetakePermission = async (userId: string, testId: string, currentValue: number) => {
     const key = `${userId}:${testId}`;
     setBusyRetakeKeys((prev) => new Set(prev).add(key));
     try {
-      if (currentValue) {
+      const rawValue = retakeDrafts[key] ?? String(currentValue);
+      const parsed = Number.parseInt(rawValue, 10);
+      const nextValue = Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+
+      if (nextValue === currentValue) return;
+
+      if (nextValue === 0) {
         const { error } = await supabase
           .from('test_retake_permissions')
           .delete()
@@ -791,14 +847,15 @@ export default function TestAssign() {
         if (error) throw error;
 
         setRetakePermissions((prev) => {
-          const next = new Set(prev);
+          const next = new Map(prev);
           next.delete(key);
           return next;
         });
+        setRetakeDrafts((prev) => ({ ...prev, [key]: '0' }));
 
         toast({
-          title: 'Retake removed',
-          description: 'The candidate can no longer retake this assessment.',
+          title: 'Retries removed',
+          description: 'Retry count has been set to 0.',
         });
       } else {
         const { data: sessionData } = await supabase.auth.getSession();
@@ -807,27 +864,76 @@ export default function TestAssign() {
 
         const { error } = await supabase
           .from('test_retake_permissions')
-          .insert({
+          .upsert({
             user_id: userId,
             test_id: testId,
             granted_by: grantedBy,
-            reason: 'Admin retake enabled',
+            granted_attempts: nextValue,
+            remaining_attempts: nextValue,
+            granted_at: new Date().toISOString(),
+            reason: `Admin set retries to ${nextValue}`,
+          }, {
+            onConflict: 'user_id,test_id',
           });
 
-        if (error) throw error;
+        let persistedAttempts = nextValue;
 
-        setRetakePermissions((prev) => new Set(prev).add(key));
+        if (error) {
+          if (!isMissingRetryColumnError(error)) {
+            throw error;
+          }
+
+          const { error: legacyError } = await supabase
+            .from('test_retake_permissions')
+            .upsert(
+              {
+                user_id: userId,
+                test_id: testId,
+                granted_by: grantedBy,
+                granted_at: new Date().toISOString(),
+                reason:
+                  nextValue > 1
+                    ? `Admin requested ${nextValue} retries (legacy schema allows 1)`
+                    : `Admin set retries to ${nextValue}`,
+              },
+              {
+                onConflict: 'user_id,test_id',
+              }
+            );
+
+          if (legacyError) {
+            throw legacyError;
+          }
+
+          persistedAttempts = 1;
+          if (nextValue > 1) {
+            toast({
+              title: 'Legacy retry mode',
+              description:
+                'Your database has not applied retry-count columns yet. Saved as 1 retry until migrations are applied.',
+              variant: 'destructive',
+            });
+          }
+        }
+
+        setRetakePermissions((prev) => {
+          const next = new Map(prev);
+          next.set(key, persistedAttempts);
+          return next;
+        });
+        setRetakeDrafts((prev) => ({ ...prev, [key]: String(persistedAttempts) }));
 
         toast({
-          title: 'Retake granted',
-          description: 'The candidate can retake this assessment.',
+          title: 'Retries updated',
+          description: `Candidate can retry ${persistedAttempts} time${persistedAttempts === 1 ? '' : 's'}.`,
         });
       }
     } catch (error) {
       console.error('Error updating retake permission:', error);
+      const message = String((error as { message?: string })?.message || '');
       toast({
         title: 'Update failed',
-        description: 'Unable to update retake permission.',
+        description: message || 'Unable to update retry count.',
         variant: 'destructive',
       });
     } finally {
@@ -1189,7 +1295,7 @@ export default function TestAssign() {
                       <TableHead>Status</TableHead>
                       <TableHead>Last Activity</TableHead>
                       <TableHead>Withdraw</TableHead>
-                      <TableHead>Allow Retake</TableHead>
+                      <TableHead>Retry Attempts</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -1202,6 +1308,8 @@ export default function TestAssign() {
                       const withdrawBusy = busyAssignmentIds.has(assignment.id);
                       const retakeKey = `${assignment.user_id}:${assignment.test_id}`;
                       const retakeBusy = busyRetakeKeys.has(retakeKey);
+                      const currentRetries = row.retakeRemaining;
+                      const draftRetries = retakeDrafts[retakeKey] ?? String(currentRetries);
                       return (
                         <TableRow key={assignment.id}>
                           <TableCell>{index + 1}</TableCell>
@@ -1233,17 +1341,43 @@ export default function TestAssign() {
                             />
                           </TableCell>
                           <TableCell>
-                            <Switch
-                              checked={row.retakeAllowed}
-                              onCheckedChange={() =>
-                                toggleRetakePermission(
-                                  assignment.user_id,
-                                  assignment.test_id,
-                                  row.retakeAllowed
-                                )
-                              }
-                              disabled={retakeBusy}
-                            />
+                            <div className="flex items-center gap-2">
+                              <Input
+                                type="number"
+                                min={0}
+                                value={draftRetries}
+                                onChange={(event) =>
+                                  handleRetakeDraftChange(retakeKey, event.target.value)
+                                }
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter') {
+                                    event.preventDefault();
+                                    void saveRetakePermission(
+                                      assignment.user_id,
+                                      assignment.test_id,
+                                      currentRetries
+                                    );
+                                  }
+                                }}
+                                className="h-8 w-20"
+                                disabled={retakeBusy}
+                              />
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                onClick={() =>
+                                  void saveRetakePermission(
+                                    assignment.user_id,
+                                    assignment.test_id,
+                                    currentRetries
+                                  )
+                                }
+                                disabled={retakeBusy}
+                              >
+                                {retakeBusy ? 'Saving...' : 'Set'}
+                              </Button>
+                            </div>
                           </TableCell>
                         </TableRow>
                       );

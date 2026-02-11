@@ -26,6 +26,7 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Switch } from '@/components/ui/switch';
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Loader2 } from 'lucide-react';
 
@@ -41,6 +42,7 @@ const TestCreate = () => {
   const [buckets, setBuckets] = useState<string[]>([]);
   const [selectedBucket, setSelectedBucket] = useState('');
   const [questionsPerCandidate, setQuestionsPerCandidate] = useState(20);
+  const [proctoringRequired, setProctoringRequired] = useState(false);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const navigate = useNavigate();
@@ -78,8 +80,8 @@ const TestCreate = () => {
 
     if (!selectedBucket) {
       toast({
-        title: "Missing bucket",
-        description: "Please select an assessment bucket.",
+        title: "Missing exam bank",
+        description: "Please select an exam bank.",
         variant: "destructive",
       });
       return;
@@ -141,6 +143,7 @@ const TestCreate = () => {
           created_by: session.user.id,
           question_ids: questionIds,
           question_count: questionsPerCandidate,
+          proctoring_required: proctoringRequired,
           test_type: selectedBucket === 'Unassigned' ? null : selectedBucket,
         })
         .select()
@@ -162,6 +165,7 @@ const TestCreate = () => {
       setPassingPercentage(70);
       setSelectedQuestions([]);
       setQuestionsPerCandidate(20);
+      setProctoringRequired(false);
       
       // Redirect to tests page
       navigate('/tests');
@@ -308,10 +312,10 @@ const TestCreate = () => {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <Label htmlFor="bucket">Assessment Bucket</Label>
+              <Label htmlFor="bucket">Exam Bank</Label>
               <Select value={selectedBucket} onValueChange={setSelectedBucket}>
                 <SelectTrigger id="bucket">
-                  <SelectValue placeholder="Select bucket" />
+                  <SelectValue placeholder="Select exam bank" />
                 </SelectTrigger>
                 <SelectContent>
                   {buckets.map((bucketOption) => (
@@ -322,8 +326,23 @@ const TestCreate = () => {
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground mt-1">
-                Questions shown below are filtered by the selected bucket.
+                Questions shown below are filtered by the selected exam bank.
               </p>
+            </div>
+            <div className="rounded-lg border p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <Label htmlFor="proctoringRequired">Require camera/audio proctoring</Label>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    When enabled, candidates are asked for consent and suspicious activity is flagged.
+                  </p>
+                </div>
+                <Switch
+                  id="proctoringRequired"
+                  checked={proctoringRequired}
+                  onCheckedChange={setProctoringRequired}
+                />
+              </div>
             </div>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -388,7 +407,7 @@ const TestCreate = () => {
                     onCheckedChange={() => toggleQuestion(question)}
                   />
                   <Label htmlFor={`question-${question.id}`} className="cursor-pointer">
-                    {question.text} ({question.category}, {question.difficulty}, Bucket: {question.test_type || 'Unassigned'})
+                    {question.text} ({question.category}, {question.difficulty}, Bank: {question.test_type || 'Unassigned'})
                   </Label>
                 </div>
               ))}

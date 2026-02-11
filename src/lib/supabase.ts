@@ -237,6 +237,7 @@ export interface Test {
   description: string;
   duration_minutes: number;
   passing_percentage: number;
+  proctoring_required?: boolean;
   question_ids: string[];
   question_count?: number | null;
   created_by: string;
@@ -274,6 +275,9 @@ export interface TestSubmission {
   score?: number;
   total_points?: number;
   passed?: boolean;
+  proctoring_enabled?: boolean;
+  proctoring_consent?: 'granted' | 'denied' | 'unsupported' | 'unknown';
+  violations?: Array<Record<string, unknown>> | null;
   violations_count?: number;
   status: 'in_progress' | 'completed' | 'expired';
   auto_submit?: boolean;
@@ -285,7 +289,18 @@ export interface TestSubmission {
 }
 
 export interface Violation {
-  type: 'tab_switch' | 'right_click' | 'copy' | 'print_screen';
+  type:
+    | 'tab_switch'
+    | 'right_click'
+    | 'copy'
+    | 'print_screen'
+    | 'proctor_permission_denied'
+    | 'camera_missing'
+    | 'camera_lost'
+    | 'no_face_detected'
+    | 'multiple_faces_detected'
+    | 'mic_muted_or_blocked'
+    | 'sustained_speech_detected';
   timestamp: string;
   count?: number;
 }

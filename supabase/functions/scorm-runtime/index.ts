@@ -6,9 +6,32 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+const SPECIAL_ADMIN_ID = '600a8af2-9ccf-4c55-b351-a14e2b5b2221';
+const SPECIAL_ADMIN_EMAIL = 'ameh.oche@babbangona.com';
+
+const jsonResponse = (payload: unknown, status = 200) =>
+  new Response(JSON.stringify(payload), {
+    status,
+    headers: { 'Content-Type': 'application/json', ...corsHeaders },
+  });
+
+const getRouteParams = (url: URL) => {
+  const segments = url.pathname.split('/').filter(Boolean);
+  const fnIndex = segments.lastIndexOf('scorm-runtime');
+  if (fnIndex < 0) return { attemptId: null, action: null };
+  return {
+    attemptId: segments[fnIndex + 1] || null,
+    action: segments[fnIndex + 2] || null,
+  };
+};
+
 serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
+  }
+
+  if (req.method !== 'POST') {
+    return jsonResponse({ success: false, error: 'Method not allowed', errorCode: '405' }, 405);
   }
 
   try {
@@ -17,141 +40,196 @@ serve(async (req: Request) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     );
 
-    const url = new URL(req.url);
-    const pathParts = url.pathname.split('/');
-    const attemptId = pathParts[pathParts.length - 2];
-    const action = pathParts[pathParts.length - 1];
-
-    if (!attemptId || !action) {
-      return new Response(JSON.stringify({ error: 'Invalid request path' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders },
-      });
+    const authHeader = req.headers.get('authorization');
+    if (!authHeader) {
+      return jsonResponse({ success: false, error: 'Authorization required', errorCode: '401' }, 401);
     }
 
-    // Get attempt and CMI data
+    const token = authHeader.replace('Bearer ', '').trim();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser(token);
+
+    if (authError || !user) {
+      return jsonResponse({ success: false, error: 'Invalid authorization', errorCode: '401' }, 401);
+    }
+
+    const { data: requesterProfile } = await supabase
+      .from('users')
+      .select('role')
+      .eq('id', user.id)
+      .maybeSingle();
+    const isAdminRequester =
+      requesterProfile?.role === 'admin' ||
+      user.id === SPECIAL_ADMIN_ID ||
+      user.email === SPECIAL_ADMIN_EMAIL;
+
+    const url = new URL(req.url);
+    const { attemptId, action } = getRouteParams(url);
+
+    if (!attemptId || !action) {
+      return jsonResponse({ success: false, error: 'Invalid request path', errorCode: '400' }, 400);
+    }
+
     const { data: attemptData, error: attemptError } = await supabase
       .from('scorm_attempts')
       .select(`
-        *,
-        scorm_packages(*),
-        scorm_cmi(*)
+        id,
+        user_id,
+        status,
+        started_at,
+        package_id,
+        scorm_packages(version),
+        scorm_cmi(id, model)
       `)
       .eq('id', attemptId)
       .single();
 
     if (attemptError || !attemptData) {
-      return new Response(JSON.stringify({ error: 'Attempt not found' }), {
-        status: 404,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders },
-      });
+      return jsonResponse({ success: false, error: 'Attempt not found', errorCode: '404' }, 404);
     }
 
-    const cmiData = attemptData.scorm_cmi?.[0]?.model || {};
-    const packageData = attemptData.scorm_packages;
-
-    let response: any = { success: true };
-
-    switch (action) {
-      case 'initialize':
-        // Update attempt status
-        await supabase
-          .from('scorm_attempts')
-          .update({ 
-            status: 'in_progress',
-            started_at: new Date().toISOString()
-          })
-          .eq('id', attemptId);
-        
-        response = { success: true, errorCode: "0" };
-        break;
-
-      case 'getValue':
-        const { key } = await req.json();
-        const value = cmiData[key] || '';
-        response = { success: true, value, errorCode: "0" };
-        break;
-
-      case 'setValue':
-        const { key: setKey, value: setValue } = await req.json();
-        const updatedCmiData = { ...cmiData, [setKey]: setValue };
-        
-        await supabase
-          .from('scorm_cmi')
-          .update({ model: updatedCmiData })
-          .eq('attempt_id', attemptId);
-        
-        response = { success: true, errorCode: "0" };
-        break;
-
-      case 'commit':
-        // Save current CMI data (already saved in setValue)
-        response = { success: true, errorCode: "0" };
-        break;
-
-      case 'terminate':
-        // Calculate final scores and completion status
-        const isScorm12 = packageData?.version === '1.2';
-        let finalStatus = 'incomplete';
-        let completedAt = null;
-        
-        if (isScorm12) {
-          const lessonStatus = cmiData['cmi.core.lesson_status'];
-          if (lessonStatus === 'completed' || lessonStatus === 'passed') {
-            finalStatus = 'completed';
-            completedAt = new Date().toISOString();
-          }
-        } else {
-          const completionStatus = cmiData['cmi.completion_status'];
-          const successStatus = cmiData['cmi.success_status'];
-          if (completionStatus === 'completed' || successStatus === 'passed') {
-            finalStatus = 'completed';
-            completedAt = new Date().toISOString();
-          }
-        }
-
-        // Parse session time and add to total time
-        const sessionTime = isScorm12 ? 
-          cmiData['cmi.core.session_time'] : 
-          cmiData['cmi.session_time'];
-        
-        // Update attempt with final data
-        await supabase
-          .from('scorm_attempts')
-          .update({
-            status: finalStatus,
-            score_raw: parseFloat(cmiData[isScorm12 ? 'cmi.core.score.raw' : 'cmi.score.raw']) || null,
-            score_min: parseFloat(cmiData[isScorm12 ? 'cmi.core.score.min' : 'cmi.score.min']) || null,
-            score_max: parseFloat(cmiData[isScorm12 ? 'cmi.core.score.max' : 'cmi.score.max']) || null,
-            completed_at: completedAt
-          })
-          .eq('id', attemptId);
-        
-        response = { 
-          success: true, 
-          errorCode: "0",
-          completed: finalStatus === 'completed'
-        };
-        break;
-
-      default:
-        response = { success: false, errorCode: "101", errorString: "Invalid action" };
+    if (!isAdminRequester && attemptData.user_id !== user.id) {
+      return jsonResponse({ success: false, error: 'Not allowed to access this attempt', errorCode: '403' }, 403);
     }
 
-    return new Response(JSON.stringify(response), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
-    });
+    const cmiRow = attemptData.scorm_cmi?.[0];
+    if (!cmiRow) {
+      return jsonResponse({ success: false, error: 'CMI state not found for attempt', errorCode: '404' }, 404);
+    }
 
+    const cmiData =
+      cmiRow.model && typeof cmiRow.model === 'object' && !Array.isArray(cmiRow.model)
+        ? (cmiRow.model as Record<string, string>)
+        : {};
+
+    let response: Record<string, unknown> = { success: true, errorCode: '0' };
+
+    if (action === 'initialize') {
+      const nextStartedAt = attemptData.started_at || new Date().toISOString();
+      await supabase
+        .from('scorm_attempts')
+        .update({
+          status: 'in_progress',
+          started_at: nextStartedAt,
+        })
+        .eq('id', attemptId);
+
+      return jsonResponse(response);
+    }
+
+    if (action === 'getValue') {
+      const body = await req.json().catch(() => ({}));
+      const key = typeof body?.key === 'string' ? body.key : '';
+      if (!key) {
+        return jsonResponse({ success: false, errorCode: '201', errorString: 'CMI key required' }, 400);
+      }
+
+      return jsonResponse({ success: true, value: cmiData[key] || '', errorCode: '0' });
+    }
+
+    if (action === 'setValue') {
+      const body = await req.json().catch(() => ({}));
+      const setKey = typeof body?.key === 'string' ? body.key : '';
+      const setValue = typeof body?.value === 'string' ? body.value : String(body?.value ?? '');
+
+      if (!setKey) {
+        return jsonResponse({ success: false, errorCode: '201', errorString: 'CMI key required' }, 400);
+      }
+
+      const updatedCmiData = { ...cmiData, [setKey]: setValue };
+      const { error: setError } = await supabase
+        .from('scorm_cmi')
+        .update({ model: updatedCmiData })
+        .eq('attempt_id', attemptId);
+
+      if (setError) {
+        console.error('CMI setValue error:', setError);
+        return jsonResponse({ success: false, errorCode: '101', errorString: 'Failed to save CMI value' }, 500);
+      }
+
+      return jsonResponse(response);
+    }
+
+    if (action === 'commit') {
+      return jsonResponse(response);
+    }
+
+    if (action === 'terminate') {
+      const { data: latestCmiRow, error: latestCmiError } = await supabase
+        .from('scorm_cmi')
+        .select('model')
+        .eq('attempt_id', attemptId)
+        .maybeSingle();
+
+      if (latestCmiError) {
+        console.error('CMI terminate load error:', latestCmiError);
+      }
+
+      const latestCmi =
+        latestCmiRow?.model && typeof latestCmiRow.model === 'object' && !Array.isArray(latestCmiRow.model)
+          ? (latestCmiRow.model as Record<string, string>)
+          : cmiData;
+
+      const isScorm12 = attemptData.scorm_packages?.version === '1.2';
+
+      let isCompleted = false;
+      if (isScorm12) {
+        const lessonStatus = (latestCmi['cmi.core.lesson_status'] || '').toLowerCase();
+        isCompleted = ['completed', 'passed', 'failed'].includes(lessonStatus);
+      } else {
+        const completionStatus = (latestCmi['cmi.completion_status'] || '').toLowerCase();
+        const successStatus = (latestCmi['cmi.success_status'] || '').toLowerCase();
+        isCompleted = completionStatus === 'completed' || ['passed', 'failed'].includes(successStatus);
+      }
+
+      const scoreRawKey = isScorm12 ? 'cmi.core.score.raw' : 'cmi.score.raw';
+      const scoreMinKey = isScorm12 ? 'cmi.core.score.min' : 'cmi.score.min';
+      const scoreMaxKey = isScorm12 ? 'cmi.core.score.max' : 'cmi.score.max';
+
+      const parseOptionalNumber = (value: string | undefined) => {
+        if (typeof value !== 'string' || !value.trim()) return null;
+        const parsed = Number.parseFloat(value);
+        return Number.isFinite(parsed) ? parsed : null;
+      };
+
+      const nextStatus = isCompleted ? 'completed' : 'incomplete';
+      const { error: terminateError } = await supabase
+        .from('scorm_attempts')
+        .update({
+          status: nextStatus,
+          score_raw: parseOptionalNumber(latestCmi[scoreRawKey]),
+          score_min: parseOptionalNumber(latestCmi[scoreMinKey]),
+          score_max: parseOptionalNumber(latestCmi[scoreMaxKey]),
+          completed_at: isCompleted ? new Date().toISOString() : null,
+        })
+        .eq('id', attemptId);
+
+      if (terminateError) {
+        console.error('Terminate update error:', terminateError);
+        return jsonResponse({ success: false, errorCode: '101', errorString: 'Failed to finalize attempt' }, 500);
+      }
+
+      response = {
+        success: true,
+        errorCode: '0',
+        completed: isCompleted,
+        status: nextStatus,
+      };
+      return jsonResponse(response);
+    }
+
+    return jsonResponse({ success: false, errorCode: '101', errorString: 'Invalid action' }, 400);
   } catch (error) {
     console.error('Error in scorm-runtime:', error);
-    return new Response(JSON.stringify({ 
-      success: false, 
-      error: error.message,
-      errorCode: "101"
-    }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
-    });
+    return jsonResponse(
+      {
+        success: false,
+        error: error.message || 'Internal server error',
+        errorCode: '101',
+      },
+      500
+    );
   }
 });

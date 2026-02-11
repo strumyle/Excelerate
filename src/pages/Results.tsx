@@ -32,6 +32,7 @@ interface EnhancedTestSubmission extends Omit<TestSubmission, 'test'> {
   violations_count: number;
   attempt_number?: number;
   attempt_count?: number;
+  media_violation_count?: number;
 }
 
 interface UnitPerformance {
@@ -60,6 +61,33 @@ function formatDateTimeValue(
   if (Number.isNaN(parsed.getTime())) return 'N/A';
   return format(parsed, pattern);
 }
+
+const mediaViolationTypes = new Set([
+  'proctor_permission_denied',
+  'camera_missing',
+  'camera_lost',
+  'no_face_detected',
+  'multiple_faces_detected',
+  'mic_muted_or_blocked',
+  'sustained_speech_detected',
+]);
+
+const countMediaViolations = (violations: unknown) => {
+  if (!Array.isArray(violations)) return 0;
+  return violations.filter((entry) => {
+    if (!entry || typeof entry !== 'object') return false;
+    const type = (entry as Record<string, unknown>).type;
+    return typeof type === 'string' && mediaViolationTypes.has(type);
+  }).length;
+};
+
+const formatConsent = (consent: string | null | undefined) => {
+  if (!consent) return 'Unknown';
+  if (consent === 'granted') return 'Granted';
+  if (consent === 'denied') return 'Denied';
+  if (consent === 'unsupported') return 'Unsupported';
+  return 'Unknown';
+};
 
 export default function Results() {
   const [submissions, setSubmissions] = useState<EnhancedTestSubmission[]>([]);
@@ -103,7 +131,7 @@ export default function Results() {
         const baseQuery = supabase
           .from('test_submissions')
           .select(
-            'id, assignment_id, test_id, user_id, start_time, end_time, created_at, score, passed, status, violations_count, violations, auto_submit'
+            'id, assignment_id, test_id, user_id, start_time, end_time, created_at, score, passed, status, violations_count, violations, auto_submit, proctoring_enabled, proctoring_consent'
           )
           .eq('status', 'completed')
           .not('score', 'is', null)
@@ -161,6 +189,7 @@ export default function Results() {
           violations_count:
             submission.violations_count ??
             (submission.violations ? submission.violations.length : 0),
+          media_violation_count: countMediaViolations(submission.violations),
         }));
 
         const releasedSubmissions = isAdmin
@@ -432,7 +461,9 @@ export default function Results() {
         'Score',
         'Status',
         'Attempt',
-        'Violations (count)'
+        'Violations (count)',
+        'Proctoring Consent',
+        'Proctor Flags (count)'
       ].join(',');
       
       // Generate CSV rows
@@ -450,7 +481,9 @@ export default function Results() {
           `"${typeof submission.score === 'number' ? Math.round(submission.score) + '%' : 'N/A'}"`,
           `"${submission.passed ? 'Passed' : 'Failed'}"`,
           `"${attemptLabel}"`,
-          `"${submission.violations_count || 0}"`
+          `"${submission.violations_count || 0}"`,
+          `"${formatConsent(submission.proctoring_consent)}"`,
+          `"${submission.media_violation_count || 0}"`
         ].join(',');
         return values;
       }).join('\n');
@@ -533,14 +566,14 @@ export default function Results() {
       {userRole === 'admin' && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
           {/* Performance by Unit */}
-          <Card>
+          <Card className="h-[460px]">
             <CardHeader>
               <CardTitle className="flex items-center">
                 <Users className="h-5 w-5 mr-2" />
                 Performance by Unit/Department
               </CardTitle>
             </CardHeader>
-            <CardContent>
+            <CardContent className="h-[380px] overflow-y-auto pr-2">
               {unitPerformance.length === 0 ? (
                 <p className="text-muted-foreground text-center py-4">No unit data available</p>
               ) : (
@@ -731,6 +764,8 @@ function ResultsTable({ submissions, isAdmin, onToggleRelease }: ResultsTablePro
                 <TableHead>Attempt</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Violations (count)</TableHead>
+                <TableHead>Proctoring</TableHead>
+                <TableHead>Proctor Flags</TableHead>
                 {isAdmin && <TableHead>Release Results</TableHead>}
               </TableRow>
             </TableHeader>
@@ -780,6 +815,8 @@ function ResultsTable({ submissions, isAdmin, onToggleRelease }: ResultsTablePro
                   <TableCell>
                     {submission.violations_count || 0}
                   </TableCell>
+                  <TableCell>{formatConsent(submission.proctoring_consent)}</TableCell>
+                  <TableCell>{submission.media_violation_count || 0}</TableCell>
                   {isAdmin && (
                     <TableCell>
                       <div className="flex items-center gap-2">

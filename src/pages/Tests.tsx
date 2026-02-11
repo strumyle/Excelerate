@@ -40,6 +40,7 @@ interface Test {
   updated_at: string;
   is_active: boolean;
   groups: string[];
+  proctoring_required: boolean;
 }
 
 const Tests = () => {
@@ -110,6 +111,38 @@ const Tests = () => {
     });
   };
 
+  const toggleProctoring = async (id: string, currentValue: boolean) => {
+    try {
+      const { error } = await supabase
+        .from('tests')
+        .update({
+          proctoring_required: !currentValue,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', id);
+
+      if (error) throw error;
+
+      setTests((prev) =>
+        prev.map((test) =>
+          test.id === id ? { ...test, proctoring_required: !currentValue } : test
+        )
+      );
+
+      toast({
+        title: !currentValue ? 'Proctoring enabled' : 'Proctoring disabled',
+        description: 'Test proctoring requirement has been updated.',
+      });
+    } catch (error) {
+      console.error('Error toggling proctoring:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to update proctoring requirement.',
+        variant: 'destructive',
+      });
+    }
+  };
+
   const filteredTests = tests.filter(test => 
     test.title.toLowerCase().includes(search.toLowerCase())
   );
@@ -158,6 +191,7 @@ const Tests = () => {
                     <TableHead className="w-[40%]">Test Title</TableHead>
                     <TableHead>Questions</TableHead>
                     <TableHead>Duration</TableHead>
+                    <TableHead>Proctoring</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead className="text-right">Actions</TableHead>
                   </TableRow>
@@ -180,6 +214,23 @@ const Tests = () => {
                         <div className="flex items-center">
                           <Clock className="mr-1 h-3 w-3 text-muted-foreground" />
                           <span>{test.duration_minutes} min</span>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex flex-col items-start gap-2">
+                          {test.proctoring_required ? (
+                            <Badge className="bg-blue-600">Required</Badge>
+                          ) : (
+                            <Badge variant="outline" className="text-muted-foreground">Optional</Badge>
+                          )}
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => toggleProctoring(test.id, test.proctoring_required)}
+                          >
+                            {test.proctoring_required ? 'Disable Proctoring' : 'Enable Proctoring'}
+                          </Button>
                         </div>
                       </TableCell>
                       <TableCell>

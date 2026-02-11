@@ -1,5 +1,10 @@
 import { supabase } from "@/integrations/supabase/client";
 
+const UUID_V4_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+const isUuid = (value: string) => UUID_V4_PATTERN.test(value);
+
 export interface Course {
   id: string;
   title: string;
@@ -11,6 +16,7 @@ export interface Course {
   level: string | null;
   created_at: string;
   updated_at: string;
+  is_enrolled?: boolean;
 }
 
 export interface Chapter {
@@ -95,11 +101,11 @@ export const getMyEnrollments = async (): Promise<EnrollmentProgress[]> => {
 
 // Get course details with chapters and modules
 export const getCourse = async (courseId: string) => {
-  const { data: course, error: courseError } = await supabase
-    .from('courses')
-    .select('*')
-    .eq('id', courseId)
-    .single();
+  const courseLookup = isUuid(courseId)
+    ? supabase.from('courses').select('*').eq('id', courseId)
+    : supabase.from('courses').select('*').eq('slug', courseId);
+
+  const { data: course, error: courseError } = await courseLookup.single();
 
   if (courseError) throw courseError;
 
@@ -237,12 +243,26 @@ export const issueCertificate = async (courseId: string) => {
 };
 
 // Enroll in a course
-export const enrollInCourse = async (courseId: string) => {
+export const enrollInCourse = async (
+  courseId: string
+): Promise<{ alreadyEnrolled: boolean }> => {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Not authenticated');
 
-  const { data, error } = await supabase
-    .from('enrollments')
+  const { data: existingEnrollment, error: existingError } = await supabase
+    .from('course_enrollments')
+    .select('id')
+    .eq('course_id', courseId)
+    .eq('user_id', user.id)
+    .maybeSingle();
+
+  if (existingError) throw existingError;
+  if (existingEnrollment) {
+    return { alreadyEnrolled: true };
+  }
+
+  const { error } = await supabase
+    .from('course_enrollments')
     .insert({ course_id: courseId, user_id: user.id });
 
   if (error) throw error;
@@ -254,32 +274,41 @@ export const enrollInCourse = async (courseId: string) => {
     properties: { course_id: courseId }
   });
 
-  return data;
+  return { alreadyEnrolled: false };
 };
 
-// Get available courses (not enrolled)
+// Get published courses with current user's enrollment status
 export const getAvailableCourses = async (searchTerm?: string): Promise<Course[]> => {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Not authenticated');
 
-  let query = supabase
+  let coursesQuery = supabase
     .from('courses')
-    .select(`
-      *,
-      enrollments!left(user_id)
-    `)
+    .select('*')
     .eq('is_active', true)
-    .eq('is_published', true)
-    .is('enrollments.user_id', null);
+    .eq('is_published', true);
 
   if (searchTerm) {
-    query = query.or(`title.ilike.%${searchTerm}%,description.ilike.%${searchTerm}%,category.ilike.%${searchTerm}%`);
+    coursesQuery = coursesQuery.or(
+      `title.ilike.%${searchTerm}%,description.ilike.%${searchTerm}%,category.ilike.%${searchTerm}%`
+    );
   }
 
-  const { data, error } = await query;
+  const { data: courses, error: coursesError } = await coursesQuery.order('created_at', { ascending: false });
+  if (coursesError) throw coursesError;
 
-  if (error) throw error;
-  return data || [];
+  const { data: enrollmentRows, error: enrollmentError } = await supabase
+    .from('course_enrollments')
+    .select('course_id')
+    .eq('user_id', user.id);
+
+  if (enrollmentError) throw enrollmentError;
+
+  const enrolledIds = new Set((enrollmentRows || []).map((row) => row.course_id));
+  return (courses || []).map((course) => ({
+    ...course,
+    is_enrolled: enrolledIds.has(course.id),
+  }));
 };
 
 // Search all published courses

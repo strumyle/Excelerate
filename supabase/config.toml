@@ -19,13 +19,13 @@ verify_jwt = true
 verify_jwt = false
 
 [functions.admin-scorm-packages]
-verify_jwt = false
+verify_jwt = true
 
 [functions.learner-scorm-lessons]
 verify_jwt = true
 
 [functions.list-scorm-lessons]
-verify_jwt = false
+verify_jwt = true
 
 [functions.grade-submission]
-verify_jwt = false
+verify_jwt = true

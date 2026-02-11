@@ -31,6 +31,7 @@ import { cn } from '@/lib/utils';
 
 interface AssignedAssessment {
   assignment_id: string;
+  active_submission_id: string | null;
   question_count: number;
   available_until: string | null;
   id: string;
@@ -55,12 +56,34 @@ interface TestResult {
 }
 
 type CandidateView = 'dashboard' | 'learning' | 'tests' | 'results' | 'tutorials';
+const getSubmissionLockKey = (submissionId: string) => `active_exam_submission_${submissionId}`;
+const getSubmissionProgressKey = (submissionId: string) => `exam_progress_${submissionId}`;
+
+const hasSubmissionLock = (submissionId: string | null) => {
+  if (!submissionId) return false;
+  try {
+    const explicitLock = localStorage.getItem(getSubmissionLockKey(submissionId)) === '1';
+    const hasProgressSnapshot = localStorage.getItem(getSubmissionProgressKey(submissionId)) !== null;
+    return explicitLock || hasProgressSnapshot;
+  } catch {
+    return false;
+  }
+};
+
+const isMissingRetryColumnError = (error: unknown) => {
+  const message = String((error as { message?: string })?.message || '').toLowerCase();
+  return (
+    message.includes('remaining_attempts') ||
+    message.includes('granted_attempts') ||
+    (message.includes('column') && message.includes('does not exist'))
+  );
+};
 
 export default function CandidateDashboard() {
   const [user, setUser] = useState<any>(null);
   const [assessments, setAssessments] = useState<AssignedAssessment[]>([]);
   const [testResults, setTestResults] = useState<TestResult[]>([]);
-  const [retakePermissions, setRetakePermissions] = useState<Set<string>>(new Set());
+  const [retakePermissions, setRetakePermissions] = useState<Map<string, number>>(new Map());
   const [loading, setLoading] = useState(true);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [activeView, setActiveView] = useState<CandidateView>('dashboard');
@@ -136,7 +159,7 @@ export default function CandidateDashboard() {
           supabase.from('tests').select('*').in('id', testIds),
           supabase
             .from('test_submissions')
-            .select('assignment_id, status, created_at')
+            .select('id, assignment_id, status, created_at')
             .eq('user_id', userId)
             .in('assignment_id', assignmentIds)
             .order('created_at', { ascending: false }),
@@ -148,7 +171,7 @@ export default function CandidateDashboard() {
       const testsById = new Map((testsData || []).map((test) => [test.id, test]));
       const latestSubmissionByAssignment = new Map<
         string,
-        { assignment_id: string | null; status: string | null; created_at: string | null }
+        { id: string; assignment_id: string | null; status: string | null; created_at: string | null }
       >();
 
       (submissionData || []).forEach((row) => {
@@ -173,6 +196,7 @@ export default function CandidateDashboard() {
 
           return {
             assignment_id: assignment.id,
+            active_submission_id: latest?.status === 'in_progress' ? latest.id : null,
             question_count: assignment.question_count,
             available_until: assignment.available_until || null,
             id: test.id,
@@ -208,24 +232,44 @@ export default function CandidateDashboard() {
 
   const fetchTestResults = async (userId: string) => {
     try {
-      const { data, error } = await supabase
+      const { data: submissionRows, error: submissionsError } = await supabase
         .from('test_submissions')
-        .select(`
-          id,
-          test_id,
-          score,
-          passed,
-          created_at,
-          tests!inner(title, passing_percentage, results_released)
-        `)
+        .select('id, test_id, score, passed, created_at')
         .eq('user_id', userId)
         .eq('status', 'completed')
-        .eq('tests.results_released', true)
         .not('score', 'is', null)
         .order('created_at', { ascending: false });
 
-      if (error) throw error;
-      setTestResults((data as TestResult[]) || []);
+      if (submissionsError) throw submissionsError;
+      const rows = submissionRows || [];
+
+      if (rows.length === 0) {
+        setTestResults([]);
+        return;
+      }
+
+      const testIds = Array.from(new Set(rows.map((row) => row.test_id).filter(Boolean)));
+      const { data: releasedTests, error: testsError } = await supabase
+        .from('tests')
+        .select('id, title, passing_percentage, results_released')
+        .in('id', testIds)
+        .eq('results_released', true);
+
+      if (testsError) throw testsError;
+
+      const testsById = new Map((releasedTests || []).map((test) => [test.id, test]));
+      const releasedResults = rows
+        .filter((row) => row.test_id && testsById.has(row.test_id))
+        .map((row) => ({
+          id: row.id,
+          test_id: row.test_id,
+          score: Number(row.score || 0),
+          passed: Boolean(row.passed),
+          created_at: row.created_at || new Date().toISOString(),
+          tests: testsById.get(row.test_id)!,
+        })) as TestResult[];
+
+      setTestResults(releasedResults);
     } catch (error) {
       console.error('Error fetching test results:', error);
     }
@@ -235,16 +279,42 @@ export default function CandidateDashboard() {
     try {
       const { data, error } = await supabase
         .from('test_retake_permissions')
-        .select('test_id')
-        .eq('user_id', userId);
+        .select('test_id, remaining_attempts')
+        .eq('user_id', userId)
+        .gt('remaining_attempts', 0);
 
-      if (error) throw error;
+      if (!error) {
+        const next = new Map<string, number>();
+        (data || []).forEach((row) => {
+          const attempts = Number((row as { remaining_attempts?: number | null }).remaining_attempts || 0);
+          if (attempts > 0) {
+            next.set(row.test_id, attempts);
+          }
+        });
+        setRetakePermissions(next);
+        return;
+      }
 
-      const permissionSet = new Set((data || []).map((row) => row.test_id));
-      setRetakePermissions(permissionSet);
+      if (isMissingRetryColumnError(error)) {
+        const { data: legacyData, error: legacyError } = await supabase
+          .from('test_retake_permissions')
+          .select('test_id')
+          .eq('user_id', userId);
+
+        if (legacyError) throw legacyError;
+
+        const next = new Map<string, number>();
+        (legacyData || []).forEach((row) => {
+          next.set(row.test_id, 1);
+        });
+        setRetakePermissions(next);
+        return;
+      }
+
+      throw error;
     } catch (error) {
       console.error('Error fetching retake permissions:', error);
-      setRetakePermissions(new Set());
+      setRetakePermissions(new Map());
     }
   };
 
@@ -286,9 +356,11 @@ export default function CandidateDashboard() {
   const getActionLabel = (
     status: AssignedAssessment['latest_status'],
     retakeAllowed: boolean,
-    availabilityExpired: boolean
+    availabilityExpired: boolean,
+    inProgressLockedElsewhere: boolean
   ) => {
     if (availabilityExpired) return 'Assessment closed';
+    if (inProgressLockedElsewhere) return 'Assessment in progress';
     if (status === 'in_progress') return 'Resume Assessment';
     if (status === 'completed') return retakeAllowed ? 'Start Retake' : 'Retake unavailable';
     return 'Start Assessment';
@@ -502,14 +574,20 @@ export default function CandidateDashboard() {
                 {(() => {
                   const availabilityExpired = isAvailabilityExpired(assessment);
                   const remainingTime = getRemainingTimeMs(assessment.available_until);
-                  const canRetake = retakePermissions.has(assessment.id);
+                  const retriesLeft = retakePermissions.get(assessment.id) || 0;
+                  const canRetake = retriesLeft > 0;
+                  const inProgressLockedElsewhere =
+                    assessment.latest_status === 'in_progress' &&
+                    Boolean(assessment.active_submission_id) &&
+                    !hasSubmissionLock(assessment.active_submission_id);
                   const isRetakeBlocked =
                     assessment.latest_status === 'completed' && !canRetake;
-                  const isAccessBlocked = availabilityExpired || isRetakeBlocked;
+                  const isAccessBlocked = availabilityExpired || isRetakeBlocked || inProgressLockedElsewhere;
                   const actionLabel = getActionLabel(
                     assessment.latest_status,
                     canRetake,
-                    availabilityExpired
+                    availabilityExpired,
+                    inProgressLockedElsewhere
                   );
                   return (
                 <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
@@ -560,6 +638,16 @@ export default function CandidateDashboard() {
                     {!availabilityExpired && isRetakeBlocked && (
                       <span className="text-xs text-muted-foreground mt-2">
                         Retake permission required.
+                      </span>
+                    )}
+                    {!availabilityExpired && assessment.latest_status === 'completed' && canRetake && (
+                      <span className="text-xs text-muted-foreground mt-2">
+                        Retries left: {retriesLeft}
+                      </span>
+                    )}
+                    {inProgressLockedElsewhere && (
+                      <span className="text-xs text-muted-foreground mt-2">
+                        This assessment is currently in progress on another device.
                       </span>
                     )}
                   </div>

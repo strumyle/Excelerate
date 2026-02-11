@@ -6,8 +6,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Package, Link, Upload, Calendar } from 'lucide-react';
-import { useToast } from "@/hooks/use-toast";
+import { Package, Link, Calendar } from 'lucide-react';
+import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 import { ScormUpload } from '@/components/scorm/ScormUpload';
 
@@ -17,6 +17,7 @@ interface ScormPackage {
   version: string;
   created_at: string;
   is_active: boolean;
+  entry_point?: string;
 }
 
 interface Course {
@@ -37,50 +38,40 @@ export default function AdminScorm() {
   const { toast } = useToast();
 
   useEffect(() => {
-    loadData();
+    void loadData();
   }, []);
 
   const loadData = async () => {
     try {
       setLoading(true);
-      
-      // Load SCORM packages using the correct endpoint
-      const response = await fetch(`https://xrfiltyxdviefanplykg.supabase.co/functions/v1/admin-scorm-packages/packages`, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`,
-          'Content-Type': 'application/json'
-        }
-      });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Failed to load packages: ${response.status} ${errorText}`);
-      }
+      const [{ data: packagePayload, error: packageError }, { data: coursesData, error: coursesError }] =
+        await Promise.all([
+          supabase.functions.invoke('admin-scorm-packages', {
+            body: { action: 'listPackages' },
+          }),
+          supabase
+            .from('courses')
+            .select(`
+              id,
+              title,
+              modules(id, title)
+            `)
+            .eq('is_active', true)
+            .order('title'),
+        ]);
 
-      const packagesData = await response.json();
-      
-      // Load courses with modules
-      const { data: coursesData, error: coursesError } = await supabase
-        .from('courses')
-        .select(`
-          id,
-          title,
-          modules(id, title)
-        `)
-        .eq('is_active', true)
-        .order('title');
-
+      if (packageError) throw packageError;
       if (coursesError) throw coursesError;
 
-      setPackages(packagesData.packages || []);
-      setCourses(coursesData || []);
+      setPackages((packagePayload?.packages || []) as ScormPackage[]);
+      setCourses((coursesData || []) as Course[]);
     } catch (error) {
       console.error('Error loading data:', error);
       toast({
-        title: "Error",
-        description: "Failed to load SCORM packages",
-        variant: "destructive"
+        title: 'Error',
+        description: 'Failed to load SCORM packages',
+        variant: 'destructive',
       });
     } finally {
       setLoading(false);
@@ -88,40 +79,32 @@ export default function AdminScorm() {
   };
 
   const handleAttachPackage = async () => {
-    if (!selectedPackage || !selectedCourse || !selectedModule || !lessonTitle) {
+    if (!selectedPackage || !selectedCourse || !selectedModule || !lessonTitle.trim()) {
       toast({
-        title: "Error",
-        description: "Please fill in all required fields",
-        variant: "destructive"
+        title: 'Error',
+        description: 'Please fill in all required fields',
+        variant: 'destructive',
       });
       return;
     }
 
     try {
-      const response = await fetch(`https://xrfiltyxdviefanplykg.supabase.co/functions/v1/admin-scorm-packages/attach`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
+      const { data, error } = await supabase.functions.invoke('admin-scorm-packages', {
+        body: {
+          action: 'attachPackage',
           packageId: selectedPackage,
           courseId: selectedCourse,
           moduleId: selectedModule,
-          title: lessonTitle
-        })
+          title: lessonTitle.trim(),
+        },
       });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Failed to attach package: ${response.status} ${errorText}`);
-      }
-
-      const data = await response.json();
+      if (error) throw error;
+      if (data?.error) throw new Error(data.error);
 
       toast({
-        title: "Success",
-        description: "SCORM package attached to course successfully"
+        title: 'Success',
+        description: 'SCORM package attached to course successfully',
       });
 
       setAttachDialogOpen(false);
@@ -129,17 +112,18 @@ export default function AdminScorm() {
       setSelectedCourse('');
       setSelectedModule('');
       setLessonTitle('');
+      await loadData();
     } catch (error) {
       console.error('Error attaching package:', error);
       toast({
-        title: "Error",
-        description: "Failed to attach SCORM package",
-        variant: "destructive"
+        title: 'Error',
+        description: 'Failed to attach SCORM package',
+        variant: 'destructive',
       });
     }
   };
 
-  const selectedCourseData = courses.find(c => c.id === selectedCourse);
+  const selectedCourseData = courses.find((course) => course.id === selectedCourse);
 
   if (loading) {
     return (
@@ -162,11 +146,9 @@ export default function AdminScorm() {
             <Package className="h-8 w-8 text-primary" />
             SCORM Packages
           </h1>
-          <p className="text-muted-foreground mt-2">
-            Manage and attach SCORM content to courses
-          </p>
+          <p className="text-muted-foreground mt-2">Manage and attach SCORM content to courses</p>
         </div>
-        <ScormUpload onPackageUploaded={loadData} />
+        <ScormUpload onPackageUploaded={() => void loadData()} />
       </div>
 
       {packages.length > 0 ? (
@@ -179,8 +161,8 @@ export default function AdminScorm() {
                     <CardTitle className="text-lg">{pkg.title}</CardTitle>
                     <div className="flex items-center gap-2 mt-2">
                       <Badge variant="outline">SCORM {pkg.version}</Badge>
-                      <Badge variant={pkg.is_active ? "default" : "secondary"}>
-                        {pkg.is_active ? "Active" : "Inactive"}
+                      <Badge variant={pkg.is_active ? 'default' : 'secondary'}>
+                        {pkg.is_active ? 'Active' : 'Inactive'}
                       </Badge>
                     </div>
                   </div>
@@ -191,7 +173,7 @@ export default function AdminScorm() {
                   <Calendar className="h-4 w-4" />
                   {new Date(pkg.created_at).toLocaleDateString()}
                 </div>
-                
+
                 <Dialog open={attachDialogOpen} onOpenChange={setAttachDialogOpen}>
                   <DialogTrigger asChild>
                     <Button
@@ -226,7 +208,7 @@ export default function AdminScorm() {
                           </SelectContent>
                         </Select>
                       </div>
-                      
+
                       {selectedCourseData && (
                         <div>
                           <Label htmlFor="module">Module</Label>
@@ -244,25 +226,22 @@ export default function AdminScorm() {
                           </Select>
                         </div>
                       )}
-                      
+
                       <div>
                         <Label htmlFor="title">Lesson Title</Label>
                         <Input
                           id="title"
                           value={lessonTitle}
-                          onChange={(e) => setLessonTitle(e.target.value)}
+                          onChange={(event) => setLessonTitle(event.target.value)}
                           placeholder="Enter lesson title"
                         />
                       </div>
-                      
+
                       <div className="flex gap-2">
                         <Button onClick={handleAttachPackage} className="flex-1">
                           Attach Package
                         </Button>
-                        <Button 
-                          onClick={() => setAttachDialogOpen(false)} 
-                          variant="outline"
-                        >
+                        <Button onClick={() => setAttachDialogOpen(false)} variant="outline">
                           Cancel
                         </Button>
                       </div>
@@ -277,10 +256,8 @@ export default function AdminScorm() {
         <div className="text-center py-12">
           <Package className="h-16 w-16 text-muted-foreground mx-auto mb-4" />
           <h3 className="text-xl font-semibold mb-2">No SCORM packages</h3>
-          <p className="text-muted-foreground mb-4">
-            Upload your first SCORM package to get started.
-          </p>
-          <ScormUpload onPackageUploaded={loadData} />
+          <p className="text-muted-foreground mb-4">Upload your first SCORM package to get started.</p>
+          <ScormUpload onPackageUploaded={() => void loadData()} />
         </div>
       )}
     </div>
