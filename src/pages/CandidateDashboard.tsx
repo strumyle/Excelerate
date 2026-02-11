@@ -50,6 +50,7 @@ interface TestResult {
   tests: {
     title: string;
     passing_percentage: number;
+    results_released: boolean;
   };
 }
 
@@ -210,15 +211,21 @@ export default function CandidateDashboard() {
       const { data, error } = await supabase
         .from('test_submissions')
         .select(`
-          *,
-          tests!inner(title, passing_percentage)
+          id,
+          test_id,
+          score,
+          passed,
+          created_at,
+          tests!inner(title, passing_percentage, results_released)
         `)
         .eq('user_id', userId)
         .eq('status', 'completed')
+        .eq('tests.results_released', true)
+        .not('score', 'is', null)
         .order('created_at', { ascending: false });
 
       if (error) throw error;
-      setTestResults(data || []);
+      setTestResults((data as TestResult[]) || []);
     } catch (error) {
       console.error('Error fetching test results:', error);
     }
@@ -308,7 +315,7 @@ export default function CandidateDashboard() {
     const completed = assessments.filter((assessment) => assessment.latest_status === 'completed').length;
     const avgScore =
       testResults.length > 0
-        ? Math.round((testResults.reduce((sum, result) => sum + (result.score || 0), 0) / testResults.length) * 10) / 10
+        ? Math.round(testResults.reduce((sum, result) => sum + (result.score || 0), 0) / testResults.length)
         : 0;
 
     return {
@@ -577,7 +584,9 @@ export default function CandidateDashboard() {
       </CardHeader>
       <CardContent>
         {testResults.length === 0 ? (
-          <p className="text-center text-muted-foreground py-8">No test results available yet.</p>
+          <p className="text-center text-muted-foreground py-8">
+            No released test results available yet. Completed assessments remain hidden until an admin releases them.
+          </p>
         ) : (
           <div className="space-y-4">
             {testResults.map((result) => {
@@ -593,7 +602,7 @@ export default function CandidateDashboard() {
                   <Progress value={progressValue} className="h-2 mb-4" />
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div className="rounded-lg bg-slate-50 p-3 text-center">
-                      <div className="text-2xl font-bold text-blue-700">{result.score}%</div>
+                      <div className="text-2xl font-bold text-blue-700">{Math.round(Number(result.score || 0))}%</div>
                       <div className="text-xs text-muted-foreground mt-1">Score</div>
                     </div>
                     <div className="rounded-lg bg-slate-50 p-3 text-center">

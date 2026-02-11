@@ -11,6 +11,15 @@ import { AntiCheat } from '@/utils/antiCheat';
 import { useNavigate, useParams } from 'react-router-dom';
 import { AlertCircle, Clock, AlertTriangle } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 
 interface ExamProps {
   testId?: string;
@@ -20,6 +29,14 @@ interface ExamProps {
 }
 
 type AnswerRecord = Record<string, string>;
+
+interface GradeSubmissionResponse {
+  success: boolean;
+  result: {
+    percentageScore: number;
+  } | null;
+  resultsReleased?: boolean;
+}
 
 export function ExamInterface({
   testId: propTestId,
@@ -39,10 +56,12 @@ export function ExamInterface({
   const [testData, setTestData] = useState<any>(null);
   const [violations, setViolations] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showAutoSubmitWarning, setShowAutoSubmitWarning] = useState(false);
   const lastSavedRef = useRef<string>('');
   const localSaveTimerRef = useRef<number | null>(null);
   const startTimeRef = useRef<number | null>(null);
   const durationSecondsRef = useRef<number>(0);
+  const hasShownTimeWarningRef = useRef(false);
 
   const { toast } = useToast();
   const navigate = useNavigate();
@@ -161,6 +180,10 @@ export function ExamInterface({
         startTimeRef.current = startTime;
         durationSecondsRef.current = durationSeconds;
         setTimeRemaining(remainingSeconds);
+        if (remainingSeconds > 0 && remainingSeconds <= 300 && !hasShownTimeWarningRef.current) {
+          hasShownTimeWarningRef.current = true;
+          setShowAutoSubmitWarning(true);
+        }
 
         const lockedQuestionIds =
           ((submissionRow.question_ids as string[] | null) || propQuestionIds || []).filter(Boolean);
@@ -411,7 +434,13 @@ export function ExamInterface({
       const remainingSeconds = Math.max(0, durationSeconds - elapsedSeconds);
       setTimeRemaining(remainingSeconds);
 
+      if (remainingSeconds > 0 && remainingSeconds <= 300 && !hasShownTimeWarningRef.current) {
+        hasShownTimeWarningRef.current = true;
+        setShowAutoSubmitWarning(true);
+      }
+
       if (remainingSeconds <= 0) {
+        setShowAutoSubmitWarning(false);
         window.clearInterval(timer);
         void handleSubmit(true);
       }
@@ -439,7 +468,7 @@ export function ExamInterface({
     }
   };
 
-  const gradeOnServer = async (isAutoSubmit: boolean) => {
+  const gradeOnServer = async (isAutoSubmit: boolean): Promise<GradeSubmissionResponse> => {
     const { data: session } = await supabase.auth.getSession();
     const token = session.session?.access_token;
     const questionIds = questions.map((question) => question.id);
@@ -480,7 +509,7 @@ export function ExamInterface({
       throw new Error(errorData.error || 'Failed to grade submission');
     }
 
-    return response.json();
+    return response.json() as Promise<GradeSubmissionResponse>;
   };
 
   const handleSubmit = async (isAutoSubmit = false) => {
@@ -489,19 +518,24 @@ export function ExamInterface({
 
     setSubmitting(true);
     try {
-      const { success, result } = await gradeOnServer(isAutoSubmit);
+      const { success, result, resultsReleased } = await gradeOnServer(isAutoSubmit);
 
       if (!success) {
         throw new Error('Grading failed');
       }
 
       clearLocalProgress();
+      const isAdminUser = userDetails?.role === 'admin';
+      const canShowScore = Boolean(result && (resultsReleased || isAdminUser));
+      const message = canShowScore && result
+        ? `Your answers have been recorded. Score: ${result.percentageScore.toFixed(1)}%`
+        : 'Your answers have been recorded. Results will remain hidden until an admin releases them.';
       toast({
         title: isAutoSubmit ? "Time's up!" : 'Test submitted',
-        description: `Your answers have been recorded. Score: ${result.percentageScore.toFixed(1)}%`,
+        description: message,
       });
 
-      navigate('/results');
+      navigate(isAdminUser ? '/results' : '/candidate-dashboard');
     } catch (error: any) {
       console.error('Error submitting test:', error);
       toast({
@@ -556,6 +590,7 @@ export function ExamInterface({
   const progress = questions.length > 0 ? ((currentQuestionIndex + 1) / questions.length) * 100 : 0;
   const isTimeLow = timeRemaining < 60;
   const questionOptions = currentQuestion && Array.isArray(currentQuestion.options) ? currentQuestion.options : [];
+  const answeredCount = questions.reduce((total, question) => (answers[question.id] ? total + 1 : total), 0);
 
   return (
     <div className="min-h-screen w-full bg-slate-50 p-4">
@@ -595,38 +630,85 @@ export function ExamInterface({
           </div>
           <Progress value={progress} className="h-2" />
         </CardHeader>
-        <CardContent className="pt-4 flex-1 overflow-y-auto">
-          <div className="space-y-6">
-            <div className="text-lg font-medium">{currentQuestion?.text}</div>
+        <CardContent className="pt-4 flex-1 overflow-y-auto lg:overflow-hidden">
+          <div className="grid gap-6 lg:h-full lg:grid-cols-[minmax(0,1fr)_260px]">
+            <div className="flex flex-col pr-1 lg:h-full lg:overflow-y-auto">
+              <div className="space-y-6">
+                <div className="text-lg font-medium">{currentQuestion?.text}</div>
 
-            {currentQuestion ? (
-              <RadioGroup
-                value={answers[currentQuestion.id] || ''}
-                onValueChange={(value) => handleAnswer(currentQuestion.id, value)}
-                className="space-y-3"
-              >
-                {questionOptions.length > 0 ? (
-                  questionOptions.map((option, index) => (
-                    <div key={index} className="flex items-center space-x-2">
-                      <RadioGroupItem value={option} id={`option-${index}`} />
-                      <Label htmlFor={`option-${index}`} className="text-base">
-                        {option}
-                      </Label>
-                    </div>
-                  ))
+                {currentQuestion ? (
+                  <RadioGroup
+                    value={answers[currentQuestion.id] || ''}
+                    onValueChange={(value) => handleAnswer(currentQuestion.id, value)}
+                    className="space-y-3"
+                  >
+                    {questionOptions.length > 0 ? (
+                      questionOptions.map((option, index) => (
+                        <div key={index} className="flex items-center space-x-2">
+                          <RadioGroupItem value={option} id={`option-${index}`} />
+                          <Label htmlFor={`option-${index}`} className="text-base">
+                            {option}
+                          </Label>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="text-amber-600">
+                        <AlertTriangle className="h-5 w-5 mb-2" />
+                        <p>This question has no available options.</p>
+                      </div>
+                    )}
+                  </RadioGroup>
                 ) : (
                   <div className="text-amber-600">
                     <AlertTriangle className="h-5 w-5 mb-2" />
-                    <p>This question has no available options.</p>
+                    <p>Question data is not available.</p>
                   </div>
                 )}
-              </RadioGroup>
-            ) : (
-              <div className="text-amber-600">
-                <AlertTriangle className="h-5 w-5 mb-2" />
-                <p>Question data is not available.</p>
               </div>
-            )}
+            </div>
+            <div className="flex flex-col gap-4 rounded-xl border border-slate-100 bg-white p-4 shadow-sm lg:h-full">
+              <Button
+                onClick={() => void handleSubmit()}
+                disabled={submitting}
+                className="w-full bg-slate-200 text-slate-700 hover:bg-slate-300"
+              >
+                {submitting ? 'Submitting...' : 'Submit Exam'}
+              </Button>
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-slate-900">Questions</h3>
+                <span className="text-xs text-muted-foreground">
+                  {answeredCount}/{questions.length}
+                </span>
+              </div>
+              <div className="flex-1 pr-1 lg:overflow-y-auto">
+                <div className="grid grid-cols-4 gap-2">
+                  {questions.map((question, index) => {
+                    const isCurrent = index === currentQuestionIndex;
+                    const isAnswered = Boolean(answers[question.id]);
+                    const baseClasses =
+                      'h-10 w-10 rounded-lg border text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-excelerate-300 focus-visible:ring-offset-2';
+                    const stateClasses = isCurrent
+                      ? 'border-excelerate-500 bg-white text-excelerate-700 shadow-sm ring-2 ring-excelerate-200'
+                      : isAnswered
+                      ? 'border-excelerate-100 bg-excelerate-50 text-excelerate-700 hover:border-excelerate-200'
+                      : 'border-slate-200 bg-slate-50 text-slate-500 hover:border-excelerate-200 hover:text-excelerate-600';
+
+                    return (
+                      <button
+                        key={question.id}
+                        type="button"
+                        onClick={() => setCurrentQuestionIndex(index)}
+                        className={`${baseClasses} ${stateClasses}`}
+                        aria-current={isCurrent ? 'true' : undefined}
+                        aria-label={`Go to question ${index + 1}`}
+                      >
+                        {index + 1}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
           </div>
         </CardContent>
         <CardFooter className="flex justify-between border-t p-4">
@@ -650,6 +732,22 @@ export function ExamInterface({
           </div>
         </CardFooter>
       </Card>
+      <AlertDialog open={showAutoSubmitWarning} onOpenChange={setShowAutoSubmitWarning}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Auto-submit warning</AlertDialogTitle>
+            <AlertDialogDescription>
+              You are in the final 5 minutes. This exam will be submitted automatically when time reaches zero. Time remaining:{' '}
+              <span className="font-mono text-foreground">{formatTime(Math.max(0, timeRemaining))}</span>.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogAction onClick={() => setShowAutoSubmitWarning(false)}>
+              Continue Exam
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -26,6 +26,90 @@ interface GradeResult {
   }>;
 }
 
+const SPECIAL_ADMIN_ID = '600a8af2-9ccf-4c55-b351-a14e2b5b2221';
+const SPECIAL_ADMIN_EMAIL = 'ameh.oche@babbangona.com';
+
+const normalizeText = (value: unknown) =>
+  typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').toLowerCase() : '';
+
+const parseOptions = (rawOptions: unknown): string[] => {
+  if (Array.isArray(rawOptions)) {
+    return rawOptions
+      .map((value) => (typeof value === 'string' ? value.trim() : String(value ?? '').trim()))
+      .filter((value) => value.length > 0);
+  }
+
+  if (typeof rawOptions === 'string') {
+    try {
+      const parsed = JSON.parse(rawOptions);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((value) => (typeof value === 'string' ? value.trim() : String(value ?? '').trim()))
+          .filter((value) => value.length > 0);
+      }
+    } catch {
+      return [];
+    }
+  }
+
+  return [];
+};
+
+const letterToIndex = (value: string): number | null => {
+  const trimmed = value.trim().toUpperCase();
+  if (!trimmed) return null;
+
+  // Accept formats like A, A), (A), A., Option A, option b
+  const optionMatch = trimmed.match(/^OPTION\s+([A-Z])$/i);
+  if (optionMatch?.[1]) {
+    return optionMatch[1].charCodeAt(0) - 65;
+  }
+
+  const wrappedMatch = trimmed.match(/^\(?([A-Z])\)?[.):-]?$/);
+  if (wrappedMatch?.[1]) {
+    return wrappedMatch[1].charCodeAt(0) - 65;
+  }
+
+  if (/^[A-Z]$/.test(trimmed)) {
+    return trimmed.charCodeAt(0) - 65;
+  }
+
+  return null;
+};
+
+const isAnswerCorrect = (
+  userAnswerRaw: string,
+  correctAnswerRaw: string | null,
+  rawOptions: unknown
+): boolean => {
+  const userAnswer = normalizeText(userAnswerRaw);
+  const correctAnswer = normalizeText(correctAnswerRaw);
+  if (!userAnswer || !correctAnswer) return false;
+
+  // Current format: both values store option text directly.
+  if (userAnswer === correctAnswer) return true;
+
+  const options = parseOptions(rawOptions).map((option) => normalizeText(option));
+  if (options.length === 0) return false;
+
+  // Legacy format support: correct_answer stored as A/B/C/D.
+  const correctIndex = letterToIndex(correctAnswerRaw || '');
+  if (correctIndex !== null && options[correctIndex] && userAnswer === options[correctIndex]) {
+    return true;
+  }
+
+  // Backward compatibility in case clients send A/B/C/D as selected answer.
+  const userIndex = letterToIndex(userAnswerRaw || '');
+  if (userIndex !== null && correctIndex !== null && userIndex === correctIndex) {
+    return true;
+  }
+  if (userIndex !== null && options[userIndex] && options[userIndex] === correctAnswer) {
+    return true;
+  }
+
+  return false;
+};
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -58,6 +142,17 @@ Deno.serve(async (req) => {
         { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
+
+    const { data: requesterProfile } = await supabaseClient
+      .from('users')
+      .select('role')
+      .eq('id', user.id)
+      .maybeSingle();
+
+    const isAdminRequester =
+      requesterProfile?.role === 'admin' ||
+      user.id === SPECIAL_ADMIN_ID ||
+      user.email === SPECIAL_ADMIN_EMAIL;
 
     const { submissionId, answers, violations = 0, autoSubmit = false }: GradeRequest =
       await req.json();
@@ -119,7 +214,7 @@ Deno.serve(async (req) => {
 
     const { data: test, error: testError } = await supabaseClient
       .from('tests')
-      .select('id, passing_percentage')
+      .select('id, passing_percentage, results_released')
       .eq('id', submission.test_id)
       .single();
 
@@ -132,7 +227,7 @@ Deno.serve(async (req) => {
 
     const { data: questions, error: questionsError } = await supabaseClient
       .from('questions')
-      .select('id, correct_answer, points')
+      .select('id, correct_answer, points, options')
       .in('id', lockedQuestionIds);
 
     if (questionsError || !questions) {
@@ -149,7 +244,7 @@ Deno.serve(async (req) => {
 
     for (const question of questions) {
       const userAnswer = answers[question.id] || '';
-      const isCorrect = userAnswer === question.correct_answer;
+      const isCorrect = isAnswerCorrect(userAnswer, question.correct_answer, question.options);
       const points = question.points || 1;
 
       maxPoints += points;
@@ -202,10 +297,14 @@ Deno.serve(async (req) => {
       questionResults,
     };
 
+    const resultsReleased = Boolean(test.results_released);
+    const canViewDetailedResult = isAdminRequester || resultsReleased;
+
     return new Response(
       JSON.stringify({
         success: true,
-        result,
+        result: canViewDetailedResult ? result : null,
+        resultsReleased,
         submissionId: savedSubmission?.id,
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
