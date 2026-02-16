@@ -1392,6 +1392,13 @@ export type Database = {
       }
     }
     Functions: {
+      consume_test_retake_attempt: {
+        Args: { p_permission_id?: string | null; p_test_id: string }
+        Returns: {
+          consumed: boolean
+          remaining_attempts: number | null
+        }[]
+      }
       get_user_profile_data: {
         Args: { field_name: string; user_uuid: string }
         Returns: string

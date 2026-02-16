@@ -111,38 +111,6 @@ const Tests = () => {
     });
   };
 
-  const toggleProctoring = async (id: string, currentValue: boolean) => {
-    try {
-      const { error } = await supabase
-        .from('tests')
-        .update({
-          proctoring_required: !currentValue,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', id);
-
-      if (error) throw error;
-
-      setTests((prev) =>
-        prev.map((test) =>
-          test.id === id ? { ...test, proctoring_required: !currentValue } : test
-        )
-      );
-
-      toast({
-        title: !currentValue ? 'Proctoring enabled' : 'Proctoring disabled',
-        description: 'Test proctoring requirement has been updated.',
-      });
-    } catch (error) {
-      console.error('Error toggling proctoring:', error);
-      toast({
-        title: 'Error',
-        description: 'Failed to update proctoring requirement.',
-        variant: 'destructive',
-      });
-    }
-  };
-
   const filteredTests = tests.filter(test => 
     test.title.toLowerCase().includes(search.toLowerCase())
   );
@@ -217,21 +185,7 @@ const Tests = () => {
                         </div>
                       </TableCell>
                       <TableCell>
-                        <div className="flex flex-col items-start gap-2">
-                          {test.proctoring_required ? (
-                            <Badge className="bg-blue-600">Required</Badge>
-                          ) : (
-                            <Badge variant="outline" className="text-muted-foreground">Optional</Badge>
-                          )}
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() => toggleProctoring(test.id, test.proctoring_required)}
-                          >
-                            {test.proctoring_required ? 'Disable Proctoring' : 'Enable Proctoring'}
-                          </Button>
-                        </div>
+                        <Badge className="bg-blue-600">Required</Badge>
                       </TableCell>
                       <TableCell>
                         {test.is_active ? (

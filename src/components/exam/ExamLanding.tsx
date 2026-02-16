@@ -100,6 +100,7 @@ export function ExamLanding({ testId, test, userDetails, onStart }: ExamLandingP
               <ul className="space-y-2 text-sm">
                 <li>Switching browser tabs or windows is not permitted and will be recorded.</li>
                 <li>Attempts to copy questions or use external resources will be flagged.</li>
+                <li>Camera and microphone access is required for proctoring throughout the assessment.</li>
                 <li>Ensure you have a stable internet connection before starting.</li>
                 <li>Once you start the test, you must complete it in one sitting.</li>
               </ul>

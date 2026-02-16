@@ -66,6 +66,7 @@ const App = () => (
           <Route path="/candidates" element={<RequireAuth allowedRoles={['admin']}><AdminLayout><Candidates /></AdminLayout></RequireAuth>} />
           <Route path="/tests" element={<RequireAuth allowedRoles={['admin']}><AdminLayout><Tests /></AdminLayout></RequireAuth>} />
           <Route path="/tests/create" element={<RequireAuth allowedRoles={['admin']}><AdminLayout><TestCreate /></AdminLayout></RequireAuth>} />
+          <Route path="/tests/edit/:id" element={<RequireAuth allowedRoles={['admin']}><AdminLayout><TestCreate /></AdminLayout></RequireAuth>} />
           <Route path="/tests/assign" element={<RequireAuth allowedRoles={['admin']}><AdminLayout><TestAssign /></AdminLayout></RequireAuth>} />
           <Route path="/results" element={<RequireAuth allowedRoles={['admin']}><AdminLayout><Results /></AdminLayout></RequireAuth>} />
           <Route path="/role-management" element={<RequireAuth allowedRoles={['admin']}><AdminLayout><RoleManagement /></AdminLayout></RequireAuth>} />

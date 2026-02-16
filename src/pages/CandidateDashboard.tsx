@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -275,7 +275,7 @@ export default function CandidateDashboard() {
     }
   };
 
-  const fetchRetakePermissions = async (userId: string) => {
+  const fetchRetakePermissions = useCallback(async (userId: string) => {
     try {
       const { data, error } = await supabase
         .from('test_retake_permissions')
@@ -316,7 +316,34 @@ export default function CandidateDashboard() {
       console.error('Error fetching retake permissions:', error);
       setRetakePermissions(new Map());
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    if (!user?.id) return;
+
+    const refreshRetakePermissions = () => {
+      void fetchRetakePermissions(user.id);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        refreshRetakePermissions();
+      }
+    };
+
+    window.addEventListener('focus', refreshRetakePermissions);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('focus', refreshRetakePermissions);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [user?.id, fetchRetakePermissions]);
+
+  useEffect(() => {
+    if (activeView !== 'tests' || !user?.id) return;
+    void fetchRetakePermissions(user.id);
+  }, [activeView, user?.id, fetchRetakePermissions]);
 
   const handleStartAssessment = (assessment: AssignedAssessment) => {
     navigate(`/exam/${assessment.id}?assignmentId=${assessment.assignment_id}`);
@@ -359,7 +386,7 @@ export default function CandidateDashboard() {
     availabilityExpired: boolean,
     inProgressLockedElsewhere: boolean
   ) => {
-    if (availabilityExpired) return 'Assessment closed';
+    if (availabilityExpired && !retakeAllowed) return 'Assessment closed';
     if (inProgressLockedElsewhere) return 'Assessment in progress';
     if (status === 'in_progress') return 'Resume Assessment';
     if (status === 'completed') return retakeAllowed ? 'Start Retake' : 'Retake unavailable';
@@ -576,13 +603,17 @@ export default function CandidateDashboard() {
                   const remainingTime = getRemainingTimeMs(assessment.available_until);
                   const retriesLeft = retakePermissions.get(assessment.id) || 0;
                   const canRetake = retriesLeft > 0;
+                  const canBypassExpiredWindow = availabilityExpired && canRetake;
                   const inProgressLockedElsewhere =
                     assessment.latest_status === 'in_progress' &&
                     Boolean(assessment.active_submission_id) &&
                     !hasSubmissionLock(assessment.active_submission_id);
                   const isRetakeBlocked =
                     assessment.latest_status === 'completed' && !canRetake;
-                  const isAccessBlocked = availabilityExpired || isRetakeBlocked || inProgressLockedElsewhere;
+                  const isAccessBlocked =
+                    (availabilityExpired && !canBypassExpiredWindow) ||
+                    isRetakeBlocked ||
+                    inProgressLockedElsewhere;
                   const actionLabel = getActionLabel(
                     assessment.latest_status,
                     canRetake,
@@ -630,9 +661,14 @@ export default function CandidateDashboard() {
                     >
                       {actionLabel}
                     </Button>
-                    {availabilityExpired && (
+                    {availabilityExpired && !canBypassExpiredWindow && (
                       <span className="text-xs text-muted-foreground mt-2">
                         Assessment window has expired.
+                      </span>
+                    )}
+                    {availabilityExpired && canBypassExpiredWindow && (
+                      <span className="text-xs text-muted-foreground mt-2">
+                        Retry granted. Start now to reopen the assessment window.
                       </span>
                     )}
                     {!availabilityExpired && isRetakeBlocked && (

@@ -378,6 +378,95 @@ export default function TestAssign() {
     return parsed;
   };
 
+  const parseDateMs = (value?: string | null) => {
+    if (!value) return null;
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return parsed.getTime();
+  };
+
+  const isWindowExpired = (availableUntil: string | null) => {
+    const availableUntilMs = parseDateMs(availableUntil);
+    if (availableUntilMs === null) return false;
+    return Date.now() > availableUntilMs;
+  };
+
+  const getRetryWindowMs = (
+    assignment: Pick<AssignmentRow, 'available_until' | 'created_at' | 'updated_at'>,
+    testDurationMinutes: number
+  ) => {
+    const minimumMs = Math.max(1, testDurationMinutes || 1) * 60 * 1000;
+    const maxReasonableMs = 30 * 24 * 60 * 60 * 1000;
+    const availableUntilMs = parseDateMs(assignment.available_until);
+    if (availableUntilMs === null) return minimumMs;
+
+    const baseCandidates = [parseDateMs(assignment.updated_at), parseDateMs(assignment.created_at)];
+    for (const baseMs of baseCandidates) {
+      if (baseMs === null || baseMs >= availableUntilMs) continue;
+      const windowMs = availableUntilMs - baseMs;
+      if (windowMs >= minimumMs && windowMs <= maxReasonableMs) {
+        return windowMs;
+      }
+    }
+
+    return minimumMs;
+  };
+
+  const reopenAssignmentWindowOnRetry = async (userId: string, testId: string) => {
+    const { data, error } = await supabase
+      .from('test_assignments')
+      .select('id, user_id, test_id, available_until, created_at, updated_at')
+      .eq('user_id', userId)
+      .eq('test_id', testId)
+      .eq('is_active', true)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    const assignment = (data || [])[0] as AssignmentRow | undefined;
+    if (!assignment) {
+      return { reopened: false };
+    }
+
+    if (!isWindowExpired(assignment.available_until)) {
+      return { reopened: false };
+    }
+
+    const testDurationMinutes = Number(testsById.get(testId)?.duration_minutes || 0);
+    const retryWindowMs = getRetryWindowMs(assignment, testDurationMinutes);
+    const nowIso = new Date().toISOString();
+    const reopenedUntil = new Date(Date.now() + retryWindowMs).toISOString();
+
+    const { error: updateError } = await supabase
+      .from('test_assignments')
+      .update({
+        available_until: reopenedUntil,
+        updated_at: nowIso,
+      })
+      .eq('id', assignment.id)
+      .eq('user_id', userId);
+
+    if (updateError) {
+      throw new Error(updateError.message);
+    }
+
+    setAssignments((prev) =>
+      prev.map((row) =>
+        row.id === assignment.id
+          ? { ...row, available_until: reopenedUntil, updated_at: nowIso }
+          : row
+      )
+    );
+
+    return {
+      reopened: true,
+      reopenedUntil,
+    };
+  };
+
   const getWindowRemainingLabel = (availableUntil: string | null) => {
     if (!availableUntil) return 'No expiry';
     const parsed = new Date(availableUntil);
@@ -835,7 +924,18 @@ export default function TestAssign() {
       const parsed = Number.parseInt(rawValue, 10);
       const nextValue = Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
 
-      if (nextValue === currentValue) return;
+      if (nextValue === currentValue) {
+        if (nextValue > 0) {
+          const reopenResult = await reopenAssignmentWindowOnRetry(userId, testId);
+          if (reopenResult.reopened) {
+            toast({
+              title: 'Assessment window reopened',
+              description: 'The candidate can access the assessment immediately.',
+            });
+          }
+        }
+        return;
+      }
 
       if (nextValue === 0) {
         const { error } = await supabase
@@ -916,6 +1016,16 @@ export default function TestAssign() {
           }
         }
 
+        let reopenedWindow = false;
+        let reopenErrorMessage = '';
+        try {
+          const reopenResult = await reopenAssignmentWindowOnRetry(userId, testId);
+          reopenedWindow = reopenResult.reopened;
+        } catch (reopenError) {
+          reopenErrorMessage = String((reopenError as { message?: string })?.message || '');
+          console.error('Error reopening assignment window:', reopenError);
+        }
+
         setRetakePermissions((prev) => {
           const next = new Map(prev);
           next.set(key, persistedAttempts);
@@ -923,10 +1033,21 @@ export default function TestAssign() {
         });
         setRetakeDrafts((prev) => ({ ...prev, [key]: String(persistedAttempts) }));
 
-        toast({
-          title: 'Retries updated',
-          description: `Candidate can retry ${persistedAttempts} time${persistedAttempts === 1 ? '' : 's'}.`,
-        });
+        if (reopenErrorMessage) {
+          toast({
+            title: 'Retries updated with warning',
+            description:
+              'Retry count was saved, but reopening the expired assessment window failed. Please try again.',
+            variant: 'destructive',
+          });
+        } else {
+          toast({
+            title: reopenedWindow ? 'Retries updated and window reopened' : 'Retries updated',
+            description: reopenedWindow
+              ? `Candidate can retry ${persistedAttempts} time${persistedAttempts === 1 ? '' : 's'} and can access the assessment now.`
+              : `Candidate can retry ${persistedAttempts} time${persistedAttempts === 1 ? '' : 's'}.`,
+          });
+        }
       }
     } catch (error) {
       console.error('Error updating retake permission:', error);

@@ -1,6 +1,6 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase, Question } from '@/lib/supabase';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from '@/components/ui/use-toast';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -26,26 +26,37 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Switch } from '@/components/ui/switch';
-import { ScrollArea } from "@/components/ui/scroll-area"
+import { ScrollArea } from '@/components/ui/scroll-area';
 import { Loader2 } from 'lucide-react';
 
+type EditableTest = {
+  id: string;
+  title: string;
+  description: string | null;
+  duration_minutes: number;
+  passing_percentage: number;
+  question_ids: string[];
+  question_count: number | null;
+  test_type: string | null;
+};
+
 const TestCreate = () => {
+  const { id } = useParams();
+  const isEditMode = Boolean(id);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [durationMinutes, setDurationMinutes] = useState(60);
   const [passingPercentage, setPassingPercentage] = useState(70);
   const [availableQuestions, setAvailableQuestions] = useState<Question[]>([]);
   const [selectedQuestions, setSelectedQuestions] = useState<Question[]>([]);
-  const [categories, setCategories] = useState<string[]>([]);
-  const [difficulties, setDifficulties] = useState<string[]>([]);
   const [buckets, setBuckets] = useState<string[]>([]);
   const [selectedBucket, setSelectedBucket] = useState('');
   const [questionsPerCandidate, setQuestionsPerCandidate] = useState(20);
-  const [proctoringRequired, setProctoringRequired] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [creating, setCreating] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const previousBucketRef = useRef('');
   const navigate = useNavigate();
+
   const filteredQuestions = useMemo(() => {
     if (!selectedBucket || selectedBucket === 'all') {
       return availableQuestions;
@@ -58,7 +69,9 @@ const TestCreate = () => {
   const selectedBankSize = selectedQuestions.length;
   const allSelected =
     filteredQuestions.length > 0 &&
-    selectedQuestions.length === filteredQuestions.length;
+    filteredQuestions.every((question) =>
+      selectedQuestions.some((selectedQuestion) => selectedQuestion.id === question.id)
+    );
 
   const toggleQuestion = (question: Question) => {
     if (selectedQuestions.find((q) => q.id === question.id)) {
@@ -68,182 +81,256 @@ const TestCreate = () => {
     }
   };
 
-  const createTest = async () => {
+  const saveTest = async () => {
     if (!title) {
       toast({
-        title: "Missing title",
-        description: "Please provide a title for the test.",
-        variant: "destructive",
+        title: 'Missing title',
+        description: 'Please provide a title for the test.',
+        variant: 'destructive',
       });
       return;
     }
 
     if (!selectedBucket) {
       toast({
-        title: "Missing exam bank",
-        description: "Please select an exam bank.",
-        variant: "destructive",
+        title: 'Missing exam bank',
+        description: 'Please select an exam bank.',
+        variant: 'destructive',
       });
       return;
     }
 
     if (selectedQuestions.length === 0) {
       toast({
-        title: "No questions selected",
-        description: "Please select at least one question.",
-        variant: "destructive",
+        title: 'No questions selected',
+        description: 'Please select at least one question.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (!Number.isFinite(durationMinutes) || durationMinutes <= 0) {
+      toast({
+        title: 'Invalid duration',
+        description: 'Duration must be at least 1 minute.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (!Number.isFinite(passingPercentage) || passingPercentage <= 0 || passingPercentage > 100) {
+      toast({
+        title: 'Invalid passing percentage',
+        description: 'Passing percentage must be between 1 and 100.',
+        variant: 'destructive',
       });
       return;
     }
 
     if (!Number.isFinite(questionsPerCandidate) || questionsPerCandidate <= 0) {
       toast({
-        title: "Invalid question count",
-        description: "Questions per candidate must be at least 1.",
-        variant: "destructive",
+        title: 'Invalid question count',
+        description: 'Questions per candidate must be at least 1.',
+        variant: 'destructive',
       });
       return;
     }
 
     if (questionsPerCandidate > selectedQuestions.length) {
       toast({
-        title: "Question count too high",
+        title: 'Question count too high',
         description: `Select at least ${questionsPerCandidate} questions or reduce the per-candidate count.`,
-        variant: "destructive",
+        variant: 'destructive',
       });
       return;
     }
 
     try {
-      setCreating(true);
-      
-      // Get current user
-      const { data: { session } } = await supabase.auth.getSession();
-      
-      if (!session) {
+      setSaving(true);
+
+      const timestamp = new Date().toISOString();
+      const payload = {
+        title,
+        description,
+        duration_minutes: durationMinutes,
+        passing_percentage: passingPercentage,
+        question_ids: selectedQuestions.map((question) => question.id),
+        question_count: questionsPerCandidate,
+        proctoring_required: true,
+        test_type: selectedBucket === 'Unassigned' ? null : selectedBucket,
+        updated_at: timestamp,
+      };
+
+      if (isEditMode && id) {
+        const { error } = await supabase.from('tests').update(payload).eq('id', id);
+
+        if (error) {
+          throw error;
+        }
+
         toast({
-          title: "Authentication error",
-          description: "You must be logged in to create a test.",
-          variant: "destructive",
+          title: 'Test updated',
+          description: 'Your changes have been saved successfully.',
         });
-        return;
-      }
-      
-      // Ensure question_ids is always an array
-      const questionIds = selectedQuestions.map(q => q.id);
-      
-      const { data: test, error } = await supabase
-        .from('tests')
-        .insert({
-          title,
-          description,
-          duration_minutes: durationMinutes,
-          passing_percentage: passingPercentage,
+      } else {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+
+        if (!session) {
+          toast({
+            title: 'Authentication error',
+            description: 'You must be logged in to create a test.',
+            variant: 'destructive',
+          });
+          return;
+        }
+
+        const { error } = await supabase.from('tests').insert({
+          ...payload,
           is_active: true,
           created_by: session.user.id,
-          question_ids: questionIds,
-          question_count: questionsPerCandidate,
-          proctoring_required: proctoringRequired,
-          test_type: selectedBucket === 'Unassigned' ? null : selectedBucket,
-        })
-        .select()
-        .single();
-        
-      if (error) {
-        throw error;
+        });
+
+        if (error) {
+          throw error;
+        }
+
+        toast({
+          title: 'Test created',
+          description: 'Your test has been created successfully.',
+        });
       }
-      
-      toast({
-        title: "Test created",
-        description: "Your test has been created successfully.",
-      });
-      
-      // Reset form
-      setTitle('');
-      setDescription('');
-      setDurationMinutes(60);
-      setPassingPercentage(70);
-      setSelectedQuestions([]);
-      setQuestionsPerCandidate(20);
-      setProctoringRequired(false);
-      
-      // Redirect to tests page
+
       navigate('/tests');
-      
     } catch (error: any) {
-      console.error('Error creating test:', error);
+      console.error('Error saving test:', error);
       toast({
-        title: "Error creating test",
-        description: error.message || "An unexpected error occurred.",
-        variant: "destructive",
+        title: isEditMode ? 'Error updating test' : 'Error creating test',
+        description: error.message || 'An unexpected error occurred.',
+        variant: 'destructive',
       });
     } finally {
-      setCreating(false);
+      setSaving(false);
     }
   };
 
   useEffect(() => {
-    const fetchQuestions = async () => {
+    const fetchBuilderData = async () => {
       setLoading(true);
       try {
-        // Fetch all questions
         const { data: questionsData, error: questionsError } = await supabase
           .from('questions')
           .select('*')
           .order('category', { ascending: true });
-          
+
         if (questionsError) throw questionsError;
-        
-        // Process questions to ensure test_type is present
-        const processedQuestions = questionsData?.map(q => ({
-          ...q,
-          test_type: q.test_type || ''  // Keep empty for unassigned bucket
-        })) as Question[];
-        
+
+        const processedQuestions = ((questionsData || []).map((question) => ({
+          ...question,
+          test_type: question.test_type || '',
+        })) as unknown) as Question[];
+
         setAvailableQuestions(processedQuestions);
-        
-        // Extract unique categories
-        const uniqueCategories = Array.from(
-          new Set(processedQuestions.map(q => q.category))
-        );
-        setCategories(uniqueCategories);
 
         const uniqueBuckets = Array.from(
-          new Set(processedQuestions.map(q => q.test_type || 'Unassigned'))
+          new Set(processedQuestions.map((question) => question.test_type || 'Unassigned'))
         );
-        setBuckets(uniqueBuckets);
-        if (!selectedBucket && uniqueBuckets.length > 0) {
-          setSelectedBucket(uniqueBuckets[0]);
-        }
-        
-        // Extract unique difficulty levels
-        const uniqueDifficulties = Array.from(
-          new Set(processedQuestions.map(q => q.difficulty))
-        );
-        setDifficulties(uniqueDifficulties);
 
-        if (processedQuestions.length > 0 && questionsPerCandidate > processedQuestions.length) {
-          setQuestionsPerCandidate(processedQuestions.length);
+        if (isEditMode && id) {
+          const { data: testData, error: testError } = await supabase
+            .from('tests')
+            .select(
+              'id, title, description, duration_minutes, passing_percentage, question_ids, question_count, test_type'
+            )
+            .eq('id', id)
+            .single();
+
+          if (testError) throw testError;
+
+          const editableTest = testData as EditableTest;
+          const testBucket = editableTest.test_type || 'Unassigned';
+          const bucketOptions = uniqueBuckets.includes(testBucket)
+            ? uniqueBuckets
+            : [testBucket, ...uniqueBuckets];
+          const savedQuestionIds = Array.isArray(editableTest.question_ids)
+            ? editableTest.question_ids
+            : [];
+          const selectedFromDb = processedQuestions.filter((question) =>
+            savedQuestionIds.includes(question.id)
+          );
+
+          setBuckets(bucketOptions);
+          setTitle(editableTest.title || '');
+          setDescription(editableTest.description || '');
+          setDurationMinutes(editableTest.duration_minutes || 60);
+          setPassingPercentage(editableTest.passing_percentage || 70);
+          setSelectedBucket(testBucket);
+          setSelectedQuestions(selectedFromDb);
+
+          const defaultQuestionCount =
+            typeof editableTest.question_count === 'number' && editableTest.question_count > 0
+              ? editableTest.question_count
+              : savedQuestionIds.length || selectedFromDb.length || 1;
+
+          setQuestionsPerCandidate(
+            selectedFromDb.length > 0
+              ? Math.min(defaultQuestionCount, selectedFromDb.length)
+              : defaultQuestionCount
+          );
+
+          if (savedQuestionIds.length !== selectedFromDb.length) {
+            toast({
+              title: 'Some saved questions are unavailable',
+              description:
+                'This test references questions that no longer exist. Review question selection before saving.',
+              variant: 'destructive',
+            });
+          }
+        } else {
+          setBuckets(uniqueBuckets);
+          if (uniqueBuckets.length > 0) {
+            setSelectedBucket(uniqueBuckets[0]);
+          }
+          setQuestionsPerCandidate((current) => {
+            if (processedQuestions.length === 0 || current <= processedQuestions.length) {
+              return current;
+            }
+            return processedQuestions.length;
+          });
         }
-        
       } catch (error) {
-        console.error('Error fetching questions:', error);
+        console.error('Error fetching test builder data:', error);
         toast({
-          title: "Error",
-          description: "Failed to load questions.",
-          variant: "destructive",
+          title: 'Error',
+          description: isEditMode ? 'Failed to load test for editing.' : 'Failed to load questions.',
+          variant: 'destructive',
         });
+        if (isEditMode) {
+          navigate('/tests');
+        }
       } finally {
         setLoading(false);
       }
     };
-    
-    fetchQuestions();
-  }, []);
+
+    fetchBuilderData();
+  }, [id, isEditMode, navigate]);
 
   useEffect(() => {
-    if (selectedBucket) {
+    if (!selectedBucket) {
+      previousBucketRef.current = '';
+      return;
+    }
+
+    if (!previousBucketRef.current) {
+      previousBucketRef.current = selectedBucket;
+      return;
+    }
+
+    if (previousBucketRef.current !== selectedBucket) {
       setSelectedQuestions([]);
+      previousBucketRef.current = selectedBucket;
     }
   }, [selectedBucket]);
 
@@ -257,7 +344,7 @@ const TestCreate = () => {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <Loader2 className="h-8 w-8 animate-spin text-excelerate-600" />
-        <span className="ml-2 text-xl font-medium">Loading questions...</span>
+        <span className="ml-2 text-xl font-medium">Loading test builder...</span>
       </div>
     );
   }
@@ -265,8 +352,12 @@ const TestCreate = () => {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Create Test</CardTitle>
-        <CardDescription>Define the test parameters and select questions.</CardDescription>
+        <CardTitle>{isEditMode ? 'Edit Test' : 'Create Test'}</CardTitle>
+        <CardDescription>
+          {isEditMode
+            ? 'Update test parameters and question selection.'
+            : 'Define the test parameters and select questions.'}
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid gap-4">
@@ -296,7 +387,10 @@ const TestCreate = () => {
                 type="number"
                 placeholder="60"
                 value={durationMinutes.toString()}
-                onChange={(e) => setDurationMinutes(parseInt(e.target.value))}
+                onChange={(e) => {
+                  const next = parseInt(e.target.value, 10);
+                  setDurationMinutes(Number.isFinite(next) ? next : 0);
+                }}
               />
             </div>
             <div>
@@ -306,7 +400,10 @@ const TestCreate = () => {
                 type="number"
                 placeholder="70"
                 value={passingPercentage.toString()}
-                onChange={(e) => setPassingPercentage(parseInt(e.target.value))}
+                onChange={(e) => {
+                  const next = parseInt(e.target.value, 10);
+                  setPassingPercentage(Number.isFinite(next) ? next : 0);
+                }}
               />
             </div>
           </div>
@@ -330,18 +427,11 @@ const TestCreate = () => {
               </p>
             </div>
             <div className="rounded-lg border p-3">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <Label htmlFor="proctoringRequired">Require camera/audio proctoring</Label>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    When enabled, candidates are asked for consent and suspicious activity is flagged.
-                  </p>
-                </div>
-                <Switch
-                  id="proctoringRequired"
-                  checked={proctoringRequired}
-                  onCheckedChange={setProctoringRequired}
-                />
+              <div>
+                <Label>Camera/audio proctoring</Label>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Proctoring is required for all tests. Candidates must allow camera and microphone access.
+                </p>
               </div>
             </div>
           </div>
@@ -417,34 +507,38 @@ const TestCreate = () => {
 
         <AlertDialog>
           <AlertDialogTrigger asChild>
-            <Button type="button" disabled={creating} className="w-full mt-6">
-              {creating ? (
+            <Button type="button" disabled={saving} className="w-full mt-6">
+              {saving ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Creating...
+                  {isEditMode ? 'Updating...' : 'Creating...'}
                 </>
               ) : (
-                "Create Test"
+                isEditMode ? 'Update Test' : 'Create Test'
               )}
             </Button>
           </AlertDialogTrigger>
           <AlertDialogContent>
             <AlertDialogHeader>
-              <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
+              <AlertDialogTitle>
+                {isEditMode ? 'Save changes to this test?' : 'Are you absolutely sure?'}
+              </AlertDialogTitle>
               <AlertDialogDescription>
-                This action cannot be undone. Are you sure you want to create this test?
+                {isEditMode
+                  ? 'This will overwrite the current test configuration.'
+                  : 'This action cannot be undone. Are you sure you want to create this test?'}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction onClick={createTest} disabled={creating}>
-                {creating ? (
+              <AlertDialogAction onClick={saveTest} disabled={saving}>
+                {saving ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Creating...
+                    {isEditMode ? 'Updating...' : 'Creating...'}
                   </>
                 ) : (
-                  "Create"
+                  isEditMode ? 'Update' : 'Create'
                 )}
               </AlertDialogAction>
             </AlertDialogFooter>

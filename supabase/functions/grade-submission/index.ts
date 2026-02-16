@@ -166,7 +166,7 @@ Deno.serve(async (req) => {
 
     const { data: submission, error: submissionError } = await supabaseClient
       .from('test_submissions')
-      .select('id, user_id, test_id, status, question_ids')
+      .select('id, user_id, test_id, status, question_ids, proctoring_enabled, proctoring_consent')
       .eq('id', submissionId)
       .single();
 
@@ -214,7 +214,7 @@ Deno.serve(async (req) => {
 
     const { data: test, error: testError } = await supabaseClient
       .from('tests')
-      .select('id, passing_percentage, results_released')
+      .select('id, passing_percentage, results_released, proctoring_required')
       .eq('id', submission.test_id)
       .single();
 
@@ -223,6 +223,20 @@ Deno.serve(async (req) => {
         JSON.stringify({ error: 'Test not found' }),
         { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
+    }
+
+    if (test.proctoring_required && !isAdminRequester) {
+      const isCompliant =
+        submission.proctoring_consent === 'granted' && Boolean(submission.proctoring_enabled);
+      if (!isCompliant) {
+        return new Response(
+          JSON.stringify({
+            error:
+              'Proctoring is required for this assessment. Allow camera and microphone access before submitting.',
+          }),
+          { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
     }
 
     const { data: questions, error: questionsError } = await supabaseClient

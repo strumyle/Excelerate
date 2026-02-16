@@ -208,53 +208,46 @@ export function ExamInterface({
         reason: 'browser_permission_denied',
       });
     }
+
+    return result;
   };
 
   const handleProctoringConsentGrant = async () => {
     try {
+      const result = await startMediaProctoring();
+      if (!result) return;
+
+      const isCompliant = result.consent === 'granted' && result.enabled;
+      if (!isCompliant && proctoringRequired) {
+        setShowProctoringConsentModal(true);
+        setProctoringNote('Camera/audio permission is required to continue this assessment.');
+        toast({
+          title: 'Proctoring Required',
+          description:
+            'This assessment cannot continue without camera and microphone access. Please allow permissions and try again.',
+          variant: 'destructive',
+        });
+        return;
+      }
+
       setShowProctoringConsentModal(false);
-      await startMediaProctoring();
     } catch (error: any) {
       console.error('Failed to initialize media proctoring:', error);
       setProctoringConsent('unsupported');
       setProctoringStatus('limited');
-      setProctoringNote(error?.message || 'Could not initialize media monitoring.');
+      setProctoringNote('Camera/audio permission is required to continue this assessment.');
       await syncProctoringFields('unsupported', false).catch((updateError) => {
         console.error('Failed to persist proctoring unsupported state:', updateError);
       });
+      setShowProctoringConsentModal(true);
       toast({
-        title: 'Proctoring Limited',
-        description: 'Could not fully initialize camera/audio checks. Exam will continue and this is flagged.',
+        title: 'Proctoring Required',
+        description:
+          error?.message ||
+          'Could not initialize camera/audio checks. Allow camera and microphone access to continue.',
         variant: 'destructive',
       });
     }
-  };
-
-  const handleProctoringConsentDecline = async () => {
-    setShowProctoringConsentModal(false);
-    setProctoringConsent('denied');
-    setProctoringStatus('declined');
-    setProctoringNote('Candidate declined camera/audio access.');
-    mediaProctorRef.current?.stop();
-    mediaProctorRef.current = null;
-
-    await syncProctoringFields('denied', false).catch((error) => {
-      console.error('Failed to persist proctoring denied state:', error);
-    });
-    const denialViolationPromise = antiCheatRef.current?.recordExternalViolation(
-      'proctor_permission_denied',
-      { reason: 'user_declined_permission' }
-    );
-    if (denialViolationPromise) {
-      await denialViolationPromise.catch((error) => {
-        console.error('Failed to record proctor permission denial:', error);
-      });
-    }
-  };
-
-  const handleActivateProctoring = () => {
-    if (!proctoringRequired) return;
-    setShowProctoringConsentModal(true);
   };
 
   const normalizeAnswers = (input: unknown, validIds: string[]) => {
@@ -338,15 +331,15 @@ export function ExamInterface({
           setShowProctoringConsentModal(false);
         } else if (submissionConsent === 'denied') {
           setProctoringStatus('declined');
-          setProctoringNote('Camera/audio permission declined for this attempt.');
-          setShowProctoringConsentModal(false);
+          setProctoringNote('Camera/audio permission is required to continue this assessment.');
+          setShowProctoringConsentModal(true);
         } else if (submissionConsent === 'unsupported') {
           setProctoringStatus('limited');
-          setProctoringNote('Camera/audio monitoring has limited support on this device.');
-          setShowProctoringConsentModal(false);
+          setProctoringNote('Camera/audio permission is required to continue this assessment.');
+          setShowProctoringConsentModal(true);
         } else {
           setProctoringStatus('inactive');
-          setProctoringNote(null);
+          setProctoringNote('Camera/audio permission is required to continue this assessment.');
           setShowProctoringConsentModal(true);
         }
 
@@ -663,22 +656,32 @@ export function ExamInterface({
   };
 
   const gradeOnServer = async (isAutoSubmit: boolean): Promise<GradeSubmissionResponse> => {
-    const { data: session } = await supabase.auth.getSession();
-    const token = session.session?.access_token;
     const questionIds = questions.map((question) => question.id);
     const payloadAnswers = normalizeAnswers(answers, questionIds);
-
-    if (!token) {
-      throw new Error('Not authenticated');
-    }
 
     if (!testId) {
       throw new Error('Missing test context.');
     }
 
-    const response = await fetch(
-      `${SUPABASE_URL}/functions/v1/grade-submission`,
-      {
+    const getAccessToken = async (forceRefresh = false) => {
+      if (forceRefresh) {
+        const { data, error } = await supabase.auth.refreshSession();
+        if (error) return null;
+        return data.session?.access_token || null;
+      }
+
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (session?.access_token) return session.access_token;
+
+      const { data, error } = await supabase.auth.refreshSession();
+      if (error) return null;
+      return data.session?.access_token || null;
+    };
+
+    const requestGrade = async (token: string) =>
+      fetch(`${SUPABASE_URL}/functions/v1/grade-submission`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -695,14 +698,38 @@ export function ExamInterface({
           autoSubmit: isAutoSubmit,
           auto_submit: isAutoSubmit,
           proctoringConsent,
-          proctoringEnabled: proctoringStatus === 'active',
+          proctoringEnabled: proctoringConsent === 'granted',
         }),
+      });
+
+    const readErrorMessage = async (response: Response) => {
+      try {
+        const errorData = await response.json();
+        return errorData.error || 'Failed to grade submission';
+      } catch {
+        return 'Failed to grade submission';
       }
-    );
+    };
+
+    let token = await getAccessToken(false);
+    if (!token) {
+      throw new Error('Not authenticated');
+    }
+
+    let response = await requestGrade(token);
+    if (response.status === 401) {
+      const refreshedToken = await getAccessToken(true);
+      if (refreshedToken) {
+        response = await requestGrade(refreshedToken);
+      }
+    }
 
     if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error || 'Failed to grade submission');
+      const errorMessage = await readErrorMessage(response);
+      if (response.status === 401) {
+        throw new Error(`${errorMessage}. Please sign in again and retry.`);
+      }
+      throw new Error(errorMessage || 'Failed to grade submission');
     }
 
     return response.json() as Promise<GradeSubmissionResponse>;
@@ -711,6 +738,15 @@ export function ExamInterface({
   const handleSubmit = async (isAutoSubmit = false) => {
     if (submitting) return;
     if (!submissionId) return;
+    if (proctoringRequired && proctoringConsent !== 'granted') {
+      setShowProctoringConsentModal(true);
+      toast({
+        title: 'Proctoring Required',
+        description: 'Allow camera and microphone access before submitting this assessment.',
+        variant: 'destructive',
+      });
+      return;
+    }
 
     setSubmitting(true);
     try {
@@ -836,18 +872,6 @@ export function ExamInterface({
                       ? 'Proctoring Limited'
                       : 'Proctoring Pending'}
                   </span>
-                  {proctoringStatus !== 'active' && (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={handleActivateProctoring}
-                      disabled={!antiCheatReady}
-                      className="h-8"
-                    >
-                      Activate Proctoring
-                    </Button>
-                  )}
                 </div>
               )}
               <div
@@ -936,12 +960,14 @@ export function ExamInterface({
                     const isCurrent = index === currentQuestionIndex;
                     const isAnswered = Boolean(answers[question.id]);
                     const baseClasses =
-                      'h-10 w-10 rounded-lg border text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-excelerate-300 focus-visible:ring-offset-2';
-                    const stateClasses = isCurrent
-                      ? 'border-excelerate-500 bg-white text-excelerate-700 shadow-sm ring-2 ring-excelerate-200'
+                      'h-10 w-10 rounded-lg border text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-300 focus-visible:ring-offset-2';
+                    const stateClasses = isCurrent && isAnswered
+                      ? 'border-green-800 bg-green-700 text-white shadow-sm ring-2 ring-green-300'
+                      : isCurrent
+                      ? 'border-green-700 bg-white text-green-800 shadow-sm ring-2 ring-green-200'
                       : isAnswered
-                      ? 'border-excelerate-100 bg-excelerate-50 text-excelerate-700 hover:border-excelerate-200'
-                      : 'border-slate-200 bg-slate-50 text-slate-500 hover:border-excelerate-200 hover:text-excelerate-600';
+                      ? 'border-green-600 bg-green-200 text-green-900 hover:border-green-700 hover:bg-green-300'
+                      : 'border-slate-200 bg-slate-50 text-slate-500 hover:border-green-300 hover:text-green-700';
 
                     return (
                       <button
@@ -982,18 +1008,10 @@ export function ExamInterface({
             <AlertDialogTitle>Camera and microphone consent</AlertDialogTitle>
             <AlertDialogDescription>
               This assessment requires camera and microphone proctoring to flag suspicious behavior. No audio or
-              video recordings are stored. If you continue without permission, the exam continues but the attempt is
-              flagged for admin review.
+              video recordings are stored. You must allow camera and microphone access to continue this assessment.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => void handleProctoringConsentDecline()}
-              disabled={!antiCheatReady}
-            >
-              Continue Without Proctoring
-            </Button>
             <AlertDialogAction disabled={!antiCheatReady} onClick={() => void handleProctoringConsentGrant()}>
               Allow Camera and Microphone
             </AlertDialogAction>
