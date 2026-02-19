@@ -68,6 +68,17 @@ interface AssignmentResult {
 }
 
 const GRACE_MINUTES = 15;
+const IN_FILTER_CHUNK_SIZE = 75;
+const WRITE_BATCH_SIZE = 100;
+
+const chunkArray = <T,>(items: T[], size: number): T[][] => {
+  if (items.length === 0) return [];
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+};
 
 export default function TestAssign() {
   const [tests, setTests] = useState<Test[]>([]);
@@ -228,32 +239,67 @@ export default function TestAssign() {
       const testIds = Array.from(new Set(assignmentRows.map((row) => row.test_id)));
 
       if (assignmentIds.length > 0) {
-        const { data: submissionData, error: submissionsError } = await supabase
-          .from('test_submissions')
-          .select('id, assignment_id, status, start_time, end_time, created_at, violations_count, violations')
-          .in('assignment_id', assignmentIds)
-          .order('created_at', { ascending: false });
+        const submissionChunks = chunkArray(assignmentIds, IN_FILTER_CHUNK_SIZE);
+        const collectedSubmissions: SubmissionRow[] = [];
+        let hasSubmissionError = false;
 
-        if (submissionsError) {
-          console.error('Error fetching submissions:', submissionsError);
+        for (const assignmentChunk of submissionChunks) {
+          const { data: submissionData, error: submissionsError } = await supabase
+            .from('test_submissions')
+            .select('id, assignment_id, status, start_time, end_time, created_at, violations_count, violations')
+            .in('assignment_id', assignmentChunk)
+            .order('created_at', { ascending: false });
+
+          if (submissionsError) {
+            console.error('Error fetching submissions:', submissionsError);
+            hasSubmissionError = true;
+            break;
+          }
+
+          collectedSubmissions.push(...((submissionData || []) as SubmissionRow[]));
+        }
+
+        if (hasSubmissionError) {
           setSubmissions([]);
         } else {
-          setSubmissions((submissionData || []) as SubmissionRow[]);
+          collectedSubmissions.sort((left, right) => {
+            const leftMs = left.created_at ? new Date(left.created_at).getTime() : 0;
+            const rightMs = right.created_at ? new Date(right.created_at).getTime() : 0;
+            return rightMs - leftMs;
+          });
+          setSubmissions(collectedSubmissions);
         }
       } else {
         setSubmissions([]);
       }
 
       if (userIds.length > 0 && testIds.length > 0) {
-        const { data: retakeData, error: retakeError } = await supabase
-          .from('test_retake_permissions')
-          .select('user_id, test_id, remaining_attempts')
-          .in('user_id', userIds)
-          .in('test_id', testIds);
+        const userChunks = chunkArray(userIds, IN_FILTER_CHUNK_SIZE);
+        const testChunks = chunkArray(testIds, IN_FILTER_CHUNK_SIZE);
+        const collectedRetakeRows: RetakePermissionRow[] = [];
+        let retakeError: unknown = null;
+
+        for (const userChunk of userChunks) {
+          for (const testChunk of testChunks) {
+            const { data: retakeDataChunk, error: retakeChunkError } = await supabase
+              .from('test_retake_permissions')
+              .select('user_id, test_id, remaining_attempts')
+              .in('user_id', userChunk)
+              .in('test_id', testChunk);
+
+            if (retakeChunkError) {
+              retakeError = retakeChunkError;
+              break;
+            }
+
+            collectedRetakeRows.push(...((retakeDataChunk || []) as RetakePermissionRow[]));
+          }
+          if (retakeError) break;
+        }
 
         if (!retakeError) {
           const next = new Map<string, number>();
-          (retakeData as RetakePermissionRow[] | null)?.forEach((row) => {
+          collectedRetakeRows.forEach((row) => {
             const attempts =
               Number.isFinite(row.remaining_attempts) && (row.remaining_attempts || 0) > 0
                 ? Number(row.remaining_attempts)
@@ -270,18 +316,35 @@ export default function TestAssign() {
             return Object.fromEntries(draftEntries);
           });
         } else if (isMissingRetryColumnError(retakeError)) {
-          const { data: legacyRetakeData, error: legacyRetakeError } = await supabase
-            .from('test_retake_permissions')
-            .select('user_id, test_id')
-            .in('user_id', userIds)
-            .in('test_id', testIds);
+          const userLegacyChunks = chunkArray(userIds, IN_FILTER_CHUNK_SIZE);
+          const testLegacyChunks = chunkArray(testIds, IN_FILTER_CHUNK_SIZE);
+          const collectedLegacyRows: LegacyRetakePermissionRow[] = [];
+          let legacyRetakeError: unknown = null;
+
+          for (const userChunk of userLegacyChunks) {
+            for (const testChunk of testLegacyChunks) {
+              const { data: legacyChunkData, error: legacyChunkError } = await supabase
+                .from('test_retake_permissions')
+                .select('user_id, test_id')
+                .in('user_id', userChunk)
+                .in('test_id', testChunk);
+
+              if (legacyChunkError) {
+                legacyRetakeError = legacyChunkError;
+                break;
+              }
+
+              collectedLegacyRows.push(...((legacyChunkData || []) as LegacyRetakePermissionRow[]));
+            }
+            if (legacyRetakeError) break;
+          }
 
           if (legacyRetakeError) {
             console.error('Error fetching legacy retake permissions:', legacyRetakeError);
             setRetakePermissions(new Map());
           } else {
             const next = new Map<string, number>();
-            (legacyRetakeData as LegacyRetakePermissionRow[] | null)?.forEach((row) => {
+            collectedLegacyRows.forEach((row) => {
               next.set(`${row.user_id}:${row.test_id}`, 1);
             });
             setRetakePermissions(next);
@@ -498,31 +561,47 @@ export default function TestAssign() {
     availabilityWindowMinutes: number,
     metadata?: { sourceUnit?: string; sourceFileName?: string }
   ): Promise<AssignmentResult> => {
+    const uniqueUserIds = Array.from(new Set(userIds));
+    if (uniqueUserIds.length === 0) {
+      return { created: 0, updated: 0, skippedStarted: 0 };
+    }
+
     const { data: sessionData } = await supabase.auth.getSession();
     const assignedBy = sessionData.session?.user.id ?? null;
 
-    const { data: existingAssignments, error: existingError } = await supabase
-      .from('test_assignments')
-      .select('id, user_id')
-      .eq('test_id', test.id)
-      .eq('is_active', true)
-      .in('user_id', userIds);
+    const existingAssignments: Array<{ id: string; user_id: string }> = [];
+    const userIdChunks = chunkArray(uniqueUserIds, IN_FILTER_CHUNK_SIZE);
+    for (const userChunk of userIdChunks) {
+      const { data: existingChunk, error: existingError } = await supabase
+        .from('test_assignments')
+        .select('id, user_id')
+        .eq('test_id', test.id)
+        .eq('is_active', true)
+        .in('user_id', userChunk);
 
-    if (existingError) throw new Error(existingError.message);
+      if (existingError) throw new Error(existingError.message);
+      existingAssignments.push(...((existingChunk || []) as Array<{ id: string; user_id: string }>));
+    }
 
-    const existingMap = new Map((existingAssignments || []).map((row) => [row.user_id, row]));
-    const assignmentIds = (existingAssignments || []).map((row) => row.id);
+    const existingMap = new Map(existingAssignments.map((row) => [row.user_id, row]));
+    const assignmentIds = existingAssignments.map((row) => row.id);
 
     let startedAssignmentIds = new Set<string>();
     if (assignmentIds.length > 0) {
-      const { data: startedRows, error: startedError } = await supabase
-        .from('test_submissions')
-        .select('assignment_id')
-        .in('assignment_id', assignmentIds);
+      const startedRows: Array<{ assignment_id: string | null }> = [];
+      const assignmentIdChunks = chunkArray(assignmentIds, IN_FILTER_CHUNK_SIZE);
+      for (const assignmentChunk of assignmentIdChunks) {
+        const { data: startedChunk, error: startedError } = await supabase
+          .from('test_submissions')
+          .select('assignment_id')
+          .in('assignment_id', assignmentChunk);
 
-      if (startedError) throw new Error(startedError.message);
+        if (startedError) throw new Error(startedError.message);
+        startedRows.push(...((startedChunk || []) as Array<{ assignment_id: string | null }>));
+      }
+
       startedAssignmentIds = new Set(
-        (startedRows || [])
+        startedRows
           .map((row) => row.assignment_id)
           .filter((value): value is string => Boolean(value))
       );
@@ -544,7 +623,7 @@ export default function TestAssign() {
 
     let skippedStarted = 0;
 
-    userIds.forEach((userId) => {
+    uniqueUserIds.forEach((userId) => {
       const existing = existingMap.get(userId);
       if (!existing) {
         insertRows.push({
@@ -570,25 +649,34 @@ export default function TestAssign() {
     });
 
     if (updateIds.length > 0) {
-      const { error: updateError } = await supabase
-        .from('test_assignments')
-        .update({
-          question_count: questionCount,
-          available_until: availableUntil,
-          assigned_by: assignedBy,
-          assigned_via: mode,
-          source_unit: metadata?.sourceUnit || null,
-          source_file_name: metadata?.sourceFileName || null,
-          updated_at: new Date().toISOString(),
-        })
-        .in('id', updateIds);
+      const nowIso = new Date().toISOString();
+      const updatePayload = {
+        question_count: questionCount,
+        available_until: availableUntil,
+        assigned_by: assignedBy,
+        assigned_via: mode,
+        source_unit: metadata?.sourceUnit || null,
+        source_file_name: metadata?.sourceFileName || null,
+        updated_at: nowIso,
+      };
 
-      if (updateError) throw new Error(updateError.message);
+      const updateIdChunks = chunkArray(updateIds, WRITE_BATCH_SIZE);
+      for (const updateChunk of updateIdChunks) {
+        const { error: updateError } = await supabase
+          .from('test_assignments')
+          .update(updatePayload)
+          .in('id', updateChunk);
+
+        if (updateError) throw new Error(updateError.message);
+      }
     }
 
     if (insertRows.length > 0) {
-      const { error: insertError } = await supabase.from('test_assignments').insert(insertRows);
-      if (insertError) throw new Error(insertError.message);
+      const insertChunks = chunkArray(insertRows, WRITE_BATCH_SIZE);
+      for (const insertChunk of insertChunks) {
+        const { error: insertError } = await supabase.from('test_assignments').insert(insertChunk);
+        if (insertError) throw new Error(insertError.message);
+      }
     }
 
     return {

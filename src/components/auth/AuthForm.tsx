@@ -3,12 +3,32 @@ import { signIn, signUp } from '@/lib/supabase';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
-import { Eye, EyeOff } from 'lucide-react';
+import { ArrowLeft, Eye, EyeOff } from 'lucide-react';
 
 type AuthMode = 'login' | 'register' | 'forgot' | 'reset';
+
+const ONBOARDING_UNITS = [
+  'Operator Success.',
+  'Enterprise Systems Engineering.',
+  'Enterprise Systems Product.',
+  'Internal Audit.',
+  'Last Mile Logistics.',
+  'Inventory Control.',
+  'Data.',
+  'Performance Acceleration.',
+  'Legal & Compliance.',
+  'Finance Operations.',
+  'Sales.',
+  'Security Services.',
+  'People & Culture.',
+  'Investor Relations.',
+  'Internal Services.',
+  'Member Success.',
+];
 
 export function AuthForm() {
   const [mode, setMode] = useState<AuthMode>('login');
@@ -343,16 +363,20 @@ export function AuthForm() {
               </div>
               <div className="space-y-2">
                 <label htmlFor="unit" className="text-sm font-medium">
-                  Unit/Department
+                  Unit
                 </label>
-                <Input
-                  id="unit"
-                  type="text"
-                  placeholder="e.g., Finance, HR, Marketing"
-                  value={unit}
-                  onChange={(e) => setUnit(e.target.value)}
-                  required
-                />
+                <Select value={unit} onValueChange={setUnit}>
+                  <SelectTrigger id="unit">
+                    <SelectValue placeholder="Select your unit" />
+                  </SelectTrigger>
+                  <SelectContent side="bottom" align="start" sideOffset={4} collisionPadding={12} className="max-h-60">
+                    {ONBOARDING_UNITS.map((unitOption) => (
+                      <SelectItem key={unitOption} value={unitOption}>
+                        {unitOption}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </>
           )}
@@ -437,7 +461,7 @@ export function AuthForm() {
               : mode === 'login'
               ? 'Sign In'
               : mode === 'register'
-              ? 'Register'
+              ? 'Sign up'
               : mode === 'forgot'
               ? 'Send Reset Link'
               : 'Update Password'}
@@ -445,11 +469,15 @@ export function AuthForm() {
         </form>
       </CardContent>
       <CardFooter className="flex justify-center">
-        {(mode === 'login' || mode === 'register') && (
+        {mode === 'login' && (
           <Button variant="link" onClick={toggleMode}>
-            {mode === 'login'
-              ? "Don't have an account? Register"
-              : 'Already have an account? Sign In'}
+            Sign up
+          </Button>
+        )}
+        {mode === 'register' && (
+          <Button variant="link" onClick={switchToLogin}>
+            <ArrowLeft className="mr-2 h-4 w-4" />
+            Back
           </Button>
         )}
         {(mode === 'forgot' || mode === 'reset') && (
