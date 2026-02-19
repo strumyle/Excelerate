@@ -30,7 +30,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { User, Mail, Search, Filter, UserPlus, Calendar, Download } from 'lucide-react';
+import { User, Mail, Search, Filter, UserPlus, Calendar, Download, Loader2 } from 'lucide-react';
 import { User as UserType, Candidate } from '@/lib/supabase';
 import { useToast } from '@/components/ui/use-toast';
 import { Badge } from '@/components/ui/badge';
@@ -43,6 +43,7 @@ const Candidates = () => {
   const [group, setGroup] = useState('all');
   const [groups, setGroups] = useState<string[]>([]);
   const [isAddingCandidate, setIsAddingCandidate] = useState(false);
+  const [isDownloadingCandidates, setIsDownloadingCandidates] = useState(false);
   const [activeTab, setActiveTab] = useState('active');
   const [newCandidate, setNewCandidate] = useState({
     email: '',
@@ -73,6 +74,96 @@ const Candidates = () => {
       title: 'Template downloaded',
       description: 'Use this CSV format for bulk candidate uploads.',
     });
+  };
+
+  const toCsvField = (value: string | number | null | undefined) => {
+    const safeValue = String(value ?? '').replace(/"/g, '""');
+    return `"${safeValue}"`;
+  };
+
+  const downloadAllCandidates = async () => {
+    setIsDownloadingCandidates(true);
+    try {
+      const pageSize = 1000;
+      let from = 0;
+      const allCandidates: UserType[] = [];
+
+      while (true) {
+        const { data, error } = await supabase
+          .from('users')
+          .select('id, full_name, email, user_group, unit, created_at, updated_at')
+          .eq('role', 'candidate')
+          .order('created_at', { ascending: false })
+          .range(from, from + pageSize - 1);
+
+        if (error) throw error;
+
+        const page = (data || []) as UserType[];
+        allCandidates.push(...page);
+
+        if (page.length < pageSize) break;
+        from += pageSize;
+      }
+
+      if (allCandidates.length === 0) {
+        toast({
+          title: 'No candidates found',
+          description: 'There are no candidates to export yet.',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      const headers = [
+        'S/N',
+        'Full Name',
+        'Email',
+        'User Group',
+        'Unit',
+        'Date Added',
+      ];
+
+      const rows = allCandidates.map((candidate, index) => {
+        const createdAt = candidate.created_at ? new Date(candidate.created_at).toLocaleString() : '';
+        return [
+          index + 1,
+          candidate.full_name || '',
+          candidate.email || '',
+          candidate.user_group || '',
+          candidate.unit || '',
+          createdAt,
+        ]
+          .map((value) => toCsvField(value))
+          .join(',');
+      });
+
+      const csvContent = `${headers.map((value) => toCsvField(value)).join(',')}\n${rows.join('\n')}`;
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      const today = new Date().toISOString().slice(0, 10);
+      link.setAttribute('href', url);
+      link.setAttribute('download', `all-candidates-${today}.csv`);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      toast({
+        title: 'Candidates downloaded',
+        description: `Exported ${allCandidates.length} candidate record(s).`,
+      });
+    } catch (error: any) {
+      console.error('Error downloading candidates:', error);
+      toast({
+        title: 'Download failed',
+        description: error.message || 'Unable to download candidates.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsDownloadingCandidates(false);
+    }
   };
 
   useEffect(() => {
@@ -283,6 +374,23 @@ const Candidates = () => {
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" onClick={downloadCandidateTemplate}>
             <Download className="mr-2 h-4 w-4" /> Download Upload Template
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => void downloadAllCandidates()}
+            disabled={isDownloadingCandidates}
+          >
+            {isDownloadingCandidates ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Downloading...
+              </>
+            ) : (
+              <>
+                <Download className="mr-2 h-4 w-4" />
+                Download All Candidates
+              </>
+            )}
           </Button>
           <Dialog open={isAddingCandidate} onOpenChange={setIsAddingCandidate}>
             <DialogTrigger asChild>
