@@ -99,6 +99,11 @@ export default function TestAssign() {
   const [csvAvailabilityMinutes, setCsvAvailabilityMinutes] = useState<string>('1440');
   const [csvEmails, setCsvEmails] = useState<string[]>([]);
   const [csvFileName, setCsvFileName] = useState<string>('');
+  const [selectedOnboardingTestId, setSelectedOnboardingTestId] = useState<string>('');
+  const [onboardingQuestionCount, setOnboardingQuestionCount] = useState<string>('20');
+  const [onboardingAvailabilityMinutes, setOnboardingAvailabilityMinutes] = useState<string>('1440');
+  const [onboardingEmails, setOnboardingEmails] = useState<string[]>([]);
+  const [onboardingFileName, setOnboardingFileName] = useState<string>('');
 
   const [assignmentSearch, setAssignmentSearch] = useState('');
   const [assignmentTestFilter, setAssignmentTestFilter] = useState('all');
@@ -108,6 +113,7 @@ export default function TestAssign() {
   const [isLoading, setIsLoading] = useState(true);
   const [isAssigningUnit, setIsAssigningUnit] = useState(false);
   const [isAssigningCsv, setIsAssigningCsv] = useState(false);
+  const [isAssigningOnboarding, setIsAssigningOnboarding] = useState(false);
   const [isExportingAssignments, setIsExportingAssignments] = useState(false);
   const [isDeletingAssignments, setIsDeletingAssignments] = useState(false);
   const [busyAssignmentIds, setBusyAssignmentIds] = useState<Set<string>>(new Set());
@@ -152,6 +158,14 @@ export default function TestAssign() {
       setCsvQuestionCount(String(defaultCount));
     }
   }, [selectedCsvTestId, testsById]);
+
+  useEffect(() => {
+    if (!selectedOnboardingTestId) return;
+    const defaultCount = getDefaultQuestionCount(selectedOnboardingTestId);
+    if (defaultCount !== null) {
+      setOnboardingQuestionCount(String(defaultCount));
+    }
+  }, [selectedOnboardingTestId, testsById]);
 
   const normalizeComparable = (value?: string | null) => (value || '').trim().toLowerCase();
   const normalizeEmail = (value?: string | null) => (value || '').trim().toLowerCase();
@@ -398,6 +412,36 @@ export default function TestAssign() {
       }
     } catch (error) {
       console.error('Error reading CSV:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to read CSV file.',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleOnboardingCsvUpload = async (file: File | null) => {
+    if (!file) {
+      setOnboardingEmails([]);
+      setOnboardingFileName('');
+      return;
+    }
+
+    try {
+      const text = await file.text();
+      const emails = extractEmails(text);
+      setOnboardingEmails(emails);
+      setOnboardingFileName(file.name);
+
+      if (emails.length === 0) {
+        toast({
+          title: 'No emails found',
+          description: 'Upload a CSV with at least one valid email.',
+          variant: 'destructive',
+        });
+      }
+    } catch (error) {
+      console.error('Error reading onboarding CSV:', error);
       toast({
         title: 'Error',
         description: 'Failed to read CSV file.',
@@ -685,6 +729,45 @@ export default function TestAssign() {
       skippedStarted,
     };
   };
+
+  const upsertPendingAssignmentsByEmail = async (
+    emails: string[],
+    test: Test,
+    questionCount: number,
+    availabilityWindowMinutes: number,
+    sourceFileName?: string | null
+  ) => {
+    const uniqueEmails = Array.from(new Set(emails.map((value) => normalizeEmail(value)).filter(Boolean)));
+    if (uniqueEmails.length === 0) return 0;
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    const assignedBy = sessionData.session?.user.id ?? null;
+    const nowIso = new Date().toISOString();
+    const rows = uniqueEmails.map((email) => ({
+      email,
+      test_id: test.id,
+      question_count: questionCount,
+      availability_window_minutes: availabilityWindowMinutes,
+      is_active: true,
+      assigned_by: assignedBy,
+      assigned_via: 'email',
+      source_file_name: sourceFileName || null,
+      source_unit: null,
+      updated_at: nowIso,
+    }));
+
+    const supabaseUntyped = supabase as any;
+    const rowChunks = chunkArray(rows, WRITE_BATCH_SIZE);
+    for (const rowChunk of rowChunks) {
+      const { error } = await supabaseUntyped
+        .from('pending_test_assignments')
+        .upsert(rowChunk, { onConflict: 'email,test_id,is_active' });
+      if (error) throw new Error(String(error.message || 'Failed to save pending assignments.'));
+    }
+
+    return uniqueEmails.length;
+  };
+
   const handleAssignToUnit = async () => {
     if (!selectedUnitTestId || !selectedUnit) {
       toast({
@@ -867,6 +950,125 @@ export default function TestAssign() {
       });
     } finally {
       setIsAssigningCsv(false);
+    }
+  };
+
+  const handleAssignToOnboardingEmails = async () => {
+    if (!selectedOnboardingTestId) {
+      toast({
+        title: 'Missing test',
+        description: 'Select a test first.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (onboardingEmails.length === 0) {
+      toast({
+        title: 'Missing CSV emails',
+        description: 'Upload a CSV with valid emails.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const selectedTest = testsById.get(selectedOnboardingTestId);
+    if (!selectedTest) {
+      toast({
+        title: 'Invalid test',
+        description: 'Selected test was not found.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const availableCount = selectedTest.question_ids?.length || 0;
+    if (availableCount < 1) {
+      toast({
+        title: 'No question bank',
+        description: 'Selected test has no questions.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const { requested, finalCount, capped } = parseQuestionCount(onboardingQuestionCount, availableCount);
+    const availabilityWindow = parseAvailabilityWindow(onboardingAvailabilityMinutes);
+    if (!availabilityWindow) {
+      toast({
+        title: 'Invalid availability window',
+        description: 'Set availability window to at least 1 minute.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const adminEmailSet = new Set(
+      users
+        .filter((user) => user.role === 'admin')
+        .map((user) => normalizeEmail(user.email))
+        .filter(Boolean)
+    );
+    const candidateTargetEmails = onboardingEmails.filter(
+      (email) => !adminEmailSet.has(normalizeEmail(email))
+    );
+    const usersByEmail = new Map(users.map((user) => [normalizeEmail(user.email), user]));
+    const matchedUsers = candidateTargetEmails
+      .map((email) => usersByEmail.get(normalizeEmail(email)))
+      .filter((user): user is User => Boolean(user))
+      .filter((user) => user.role !== 'admin');
+
+    const matchedUserIds = Array.from(new Set(matchedUsers.map((user) => user.id)));
+    const matchedEmailSet = new Set(matchedUsers.map((user) => normalizeEmail(user.email)));
+    const pendingEmailsOnly = candidateTargetEmails.filter(
+      (email) => !matchedEmailSet.has(normalizeEmail(email))
+    );
+    const ignoredAdminCount = onboardingEmails.length - candidateTargetEmails.length;
+
+    setIsAssigningOnboarding(true);
+    try {
+      const directResult =
+        matchedUserIds.length > 0
+          ? await assignToUsers(
+              matchedUserIds,
+              selectedTest,
+              finalCount,
+              'csv',
+              availabilityWindow,
+              { sourceFileName: onboardingFileName || null }
+            )
+          : { created: 0, updated: 0, skippedStarted: 0 };
+
+      const queuedForSignup =
+        pendingEmailsOnly.length > 0
+          ? await upsertPendingAssignmentsByEmail(
+              pendingEmailsOnly,
+              selectedTest,
+              finalCount,
+              availabilityWindow,
+              onboardingFileName || null
+            )
+          : 0;
+
+      await fetchAssignments();
+
+      toast({
+        title: 'Onboarding assignment complete',
+        description:
+          `Assigned now: ${directResult.created + directResult.updated}, skipped (started): ${directResult.skippedStarted}, queued for signup: ${queuedForSignup}.` +
+          (ignoredAdminCount > 0 ? ` Ignored admin emails: ${ignoredAdminCount}.` : '') +
+          (capped ? ` Requested ${requested}, capped to ${finalCount}.` : ''),
+      });
+    } catch (error) {
+      console.error('Error assigning onboarding emails:', error);
+      const message = error instanceof Error ? error.message : 'Failed to queue onboarding assignments.';
+      toast({
+        title: 'Error',
+        description: message,
+        variant: 'destructive',
+      });
+    } finally {
+      setIsAssigningOnboarding(false);
     }
   };
 
@@ -1559,6 +1761,95 @@ export default function TestAssign() {
               </>
             ) : (
               'Assign from CSV'
+            )}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Onboarding Email Assignment Wizard</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            Assign by email even if the candidate has not registered yet. Registered emails are assigned now,
+            while unregistered emails are queued and automatically attached when they sign up.
+          </p>
+
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+            <div className="md:col-span-2">
+              <label className="text-sm font-medium mb-2 block">Select Test</label>
+              <Select value={selectedOnboardingTestId} onValueChange={setSelectedOnboardingTestId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a test" />
+                </SelectTrigger>
+                <SelectContent>
+                  {tests.map((test) => (
+                    <SelectItem key={test.id} value={test.id}>
+                      {test.title}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div>
+              <label className="text-sm font-medium mb-2 block">Question Count</label>
+              <Input
+                type="number"
+                min={1}
+                value={onboardingQuestionCount}
+                onChange={(event) => setOnboardingQuestionCount(event.target.value)}
+              />
+            </div>
+
+            <div>
+              <label className="text-sm font-medium mb-2 block">Upload CSV Emails</label>
+              <Input
+                type="file"
+                accept=".csv,text/csv"
+                onChange={(event) => handleOnboardingCsvUpload(event.target.files?.[0] ?? null)}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="mt-2"
+                onClick={downloadCsvTemplate}
+              >
+                <Download className="mr-2 h-4 w-4" />
+                Download CSV Template
+              </Button>
+            </div>
+            <div>
+              <label className="text-sm font-medium mb-2 block">Availability Window (minutes)</label>
+              <Input
+                type="number"
+                min={1}
+                value={onboardingAvailabilityMinutes}
+                onChange={(event) => setOnboardingAvailabilityMinutes(event.target.value)}
+              />
+            </div>
+          </div>
+
+          {onboardingFileName && (
+            <p className="text-xs text-muted-foreground">
+              Loaded {onboardingEmails.length} valid emails from {onboardingFileName}.
+            </p>
+          )}
+
+          <Button
+            className="w-full md:w-auto"
+            onClick={handleAssignToOnboardingEmails}
+            disabled={isAssigningOnboarding || !selectedOnboardingTestId || onboardingEmails.length === 0}
+          >
+            {isAssigningOnboarding ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Queueing...
+              </>
+            ) : (
+              'Assign & Queue Onboarding'
             )}
           </Button>
         </CardContent>

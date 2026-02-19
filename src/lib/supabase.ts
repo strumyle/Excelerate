@@ -75,6 +75,16 @@ export const signUp = async (email: string, password: string, metadata?: { full_
       } catch (err) {
         console.error('Error in user profile creation:', err);
       }
+
+      try {
+        const supabaseUntyped = supabase as any;
+        await supabaseUntyped.rpc('materialize_pending_test_assignments_for_user', {
+          p_user_id: data.user.id,
+          p_email: data.user.email,
+        });
+      } catch (err) {
+        console.error('Pending assignment materialization skipped:', err);
+      }
     }
 
     return data;
@@ -160,6 +170,16 @@ export const signIn = async (email: string, password: string) => {
       } catch (err) {
         console.error('Error in admin permissions setup:', err);
       }
+    }
+
+    try {
+      const supabaseUntyped = supabase as any;
+      await supabaseUntyped.rpc('materialize_pending_test_assignments_for_user', {
+        p_user_id: data.user.id,
+        p_email: data.user.email,
+      });
+    } catch (err) {
+      console.error('Pending assignment materialization skipped:', err);
     }
   } catch (err) {
     console.error('Error in user profile update:', err);

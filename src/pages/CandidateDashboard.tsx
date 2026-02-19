@@ -364,9 +364,8 @@ export default function CandidateDashboard() {
     const hours = Math.floor((totalSeconds % 86400) / 3600);
     const minutes = Math.floor((totalSeconds % 3600) / 60);
     const seconds = totalSeconds % 60;
-    if (days > 0) return `${days}d ${hours}h ${minutes}m ${seconds}s left`;
-    if (hours > 0) return `${hours}h ${minutes}m ${seconds}s left`;
-    return `${minutes}m ${seconds}s left`;
+    const pad2 = (value: number) => String(value).padStart(2, '0');
+    return `${days}:${pad2(hours)}:${pad2(minutes)}:${pad2(seconds)}`;
   };
 
   const isAvailabilityExpired = (assessment: AssignedAssessment) => {
