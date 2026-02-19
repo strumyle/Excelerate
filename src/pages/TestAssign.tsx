@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Table,
   TableBody,
@@ -16,7 +17,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { toast } from '@/hooks/use-toast';
-import { Download, Loader2, Search } from 'lucide-react';
+import { Download, Loader2, Search, Trash2 } from 'lucide-react';
 import { format } from 'date-fns';
 import { Test, User } from '@/lib/supabase';
 
@@ -97,8 +98,10 @@ export default function TestAssign() {
   const [isAssigningUnit, setIsAssigningUnit] = useState(false);
   const [isAssigningCsv, setIsAssigningCsv] = useState(false);
   const [isExportingAssignments, setIsExportingAssignments] = useState(false);
+  const [isDeletingAssignments, setIsDeletingAssignments] = useState(false);
   const [busyAssignmentIds, setBusyAssignmentIds] = useState<Set<string>>(new Set());
   const [busyRetakeKeys, setBusyRetakeKeys] = useState<Set<string>>(new Set());
+  const [selectedAssignmentIds, setSelectedAssignmentIds] = useState<Set<string>>(new Set());
 
   const testsById = useMemo(
     () => new Map(tests.map((test) => [test.id, test])),
@@ -871,6 +874,146 @@ export default function TestAssign() {
     });
   }, [assignmentRows, assignmentSearch, assignmentTestFilter, assignmentStatusFilter, showInactive]);
 
+  useEffect(() => {
+    const availableIds = new Set(assignments.map((assignment) => assignment.id));
+    setSelectedAssignmentIds((prev) => {
+      const next = new Set<string>();
+      prev.forEach((id) => {
+        if (availableIds.has(id)) {
+          next.add(id);
+        }
+      });
+      return next.size === prev.size ? prev : next;
+    });
+  }, [assignments]);
+
+  const selectableVisibleAssignmentIds = useMemo(
+    () =>
+      filteredAssignments
+        .map((row) => row.assignment)
+        .filter((assignment) => assignment.is_active && !busyAssignmentIds.has(assignment.id))
+        .map((assignment) => assignment.id),
+    [filteredAssignments, busyAssignmentIds]
+  );
+
+  const selectedVisibleCount = useMemo(
+    () =>
+      selectableVisibleAssignmentIds.reduce(
+        (count, assignmentId) => count + (selectedAssignmentIds.has(assignmentId) ? 1 : 0),
+        0
+      ),
+    [selectableVisibleAssignmentIds, selectedAssignmentIds]
+  );
+
+  const allVisibleSelected =
+    selectableVisibleAssignmentIds.length > 0 &&
+    selectedVisibleCount === selectableVisibleAssignmentIds.length;
+  const someVisibleSelected = selectedVisibleCount > 0 && !allVisibleSelected;
+
+  const toggleAssignmentSelection = (assignmentId: string, checked: boolean) => {
+    setSelectedAssignmentIds((prev) => {
+      const next = new Set(prev);
+      if (checked) {
+        next.add(assignmentId);
+      } else {
+        next.delete(assignmentId);
+      }
+      return next;
+    });
+  };
+
+  const handleSelectAllVisible = () => {
+    setSelectedAssignmentIds((prev) => {
+      const next = new Set(prev);
+      if (allVisibleSelected) {
+        selectableVisibleAssignmentIds.forEach((assignmentId) => next.delete(assignmentId));
+      } else {
+        selectableVisibleAssignmentIds.forEach((assignmentId) => next.add(assignmentId));
+      }
+      return next;
+    });
+  };
+
+  const handleDeleteSelectedAssignments = async () => {
+    const selectedIds = Array.from(selectedAssignmentIds);
+    if (selectedIds.length === 0) {
+      toast({
+        title: 'No candidates selected',
+        description: 'Select at least one assignment to delete.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const activeSelectedIds = selectedIds.filter((assignmentId) =>
+      assignments.some((assignment) => assignment.id === assignmentId && assignment.is_active)
+    );
+
+    if (activeSelectedIds.length === 0) {
+      toast({
+        title: 'Nothing to delete',
+        description: 'Selected assignments are already inactive.',
+      });
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Delete ${activeSelectedIds.length} selected assignment(s)? Candidates will no longer see them on their dashboard.`
+    );
+    if (!confirmed) return;
+
+    setIsDeletingAssignments(true);
+    setBusyAssignmentIds((prev) => {
+      const next = new Set(prev);
+      activeSelectedIds.forEach((assignmentId) => next.add(assignmentId));
+      return next;
+    });
+
+    try {
+      const nowIso = new Date().toISOString();
+      const { error } = await supabase
+        .from('test_assignments')
+        .update({ is_active: false, updated_at: nowIso })
+        .in('id', activeSelectedIds);
+
+      if (error) throw error;
+
+      const activeSet = new Set(activeSelectedIds);
+      setAssignments((prev) =>
+        prev.map((assignment) =>
+          activeSet.has(assignment.id)
+            ? { ...assignment, is_active: false, updated_at: nowIso }
+            : assignment
+        )
+      );
+
+      setSelectedAssignmentIds((prev) => {
+        const next = new Set(prev);
+        activeSelectedIds.forEach((assignmentId) => next.delete(assignmentId));
+        return next;
+      });
+
+      toast({
+        title: 'Assignments deleted',
+        description: `${activeSelectedIds.length} assignment(s) removed from candidate dashboards.`,
+      });
+    } catch (error) {
+      console.error('Error deleting selected assignments:', error);
+      toast({
+        title: 'Delete failed',
+        description: 'Unable to delete selected assignments.',
+        variant: 'destructive',
+      });
+    } finally {
+      setBusyAssignmentIds((prev) => {
+        const next = new Set(prev);
+        activeSelectedIds.forEach((assignmentId) => next.delete(assignmentId));
+        return next;
+      });
+      setIsDeletingAssignments(false);
+    }
+  };
+
   const toggleAssignmentActive = async (assignmentId: string, currentValue: boolean) => {
     const nextValue = !currentValue;
     setBusyAssignmentIds((prev) => new Set(prev).add(assignmentId));
@@ -1380,6 +1523,34 @@ export default function TestAssign() {
             <Button
               type="button"
               variant="outline"
+              onClick={handleSelectAllVisible}
+              disabled={selectableVisibleAssignmentIds.length === 0 || isDeletingAssignments}
+              className="w-full lg:w-auto"
+            >
+              {allVisibleSelected ? 'Clear selection' : 'Select all'}
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={() => void handleDeleteSelectedAssignments()}
+              disabled={selectedVisibleCount === 0 || isDeletingAssignments}
+              className="w-full lg:w-auto"
+            >
+              {isDeletingAssignments ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete ({selectedVisibleCount})
+                </>
+              )}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
               onClick={downloadAssignmentsCsv}
               disabled={isExportingAssignments || filteredAssignments.length === 0}
               className="w-full lg:w-auto"
@@ -1408,6 +1579,14 @@ export default function TestAssign() {
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      <TableHead className="w-[56px]">
+                        <Checkbox
+                          checked={allVisibleSelected ? true : someVisibleSelected ? 'indeterminate' : false}
+                          onCheckedChange={() => handleSelectAllVisible()}
+                          disabled={selectableVisibleAssignmentIds.length === 0 || isDeletingAssignments}
+                          aria-label="Select all assignments"
+                        />
+                      </TableHead>
                       <TableHead className="w-[60px]">#</TableHead>
                       <TableHead>Staff</TableHead>
                       <TableHead>Test</TableHead>
@@ -1431,8 +1610,21 @@ export default function TestAssign() {
                       const retakeBusy = busyRetakeKeys.has(retakeKey);
                       const currentRetries = row.retakeRemaining;
                       const draftRetries = retakeDrafts[retakeKey] ?? String(currentRetries);
+                      const isSelected = selectedAssignmentIds.has(assignment.id);
+                      const checkboxDisabled =
+                        isDeletingAssignments || withdrawBusy || !assignment.is_active;
                       return (
                         <TableRow key={assignment.id}>
+                          <TableCell>
+                            <Checkbox
+                              checked={isSelected}
+                              onCheckedChange={(checked) =>
+                                toggleAssignmentSelection(assignment.id, checked === true)
+                              }
+                              disabled={checkboxDisabled}
+                              aria-label={`Select ${user?.full_name || user?.email || assignment.user_id}`}
+                            />
+                          </TableCell>
                           <TableCell>{index + 1}</TableCell>
                           <TableCell>
                             <div className="font-medium">{user?.full_name || 'Unknown'}</div>
