@@ -46,7 +46,6 @@ interface TestResult {
   id: string;
   test_id: string;
   score: number;
-  passed: boolean;
   created_at: string;
   tests: {
     title: string;
@@ -234,7 +233,7 @@ export default function CandidateDashboard() {
     try {
       const { data: submissionRows, error: submissionsError } = await supabase
         .from('test_submissions')
-        .select('id, test_id, score, passed, created_at')
+        .select('id, test_id, score, created_at')
         .eq('user_id', userId)
         .eq('status', 'completed')
         .not('score', 'is', null)
@@ -264,7 +263,6 @@ export default function CandidateDashboard() {
           id: row.id,
           test_id: row.test_id,
           score: Number(row.score || 0),
-          passed: Boolean(row.passed),
           created_at: row.created_at || new Date().toISOString(),
           tests: testsById.get(row.test_id)!,
         })) as TestResult[];
@@ -371,12 +369,6 @@ export default function CandidateDashboard() {
   const isAvailabilityExpired = (assessment: AssignedAssessment) => {
     const remaining = getRemainingTimeMs(assessment.available_until);
     return remaining !== null && remaining <= 0;
-  };
-
-  const getGrade = (score: number, passingPercentage: number) => {
-    if (score < 50) return { grade: 'Not Yet', color: 'text-red-600', bg: 'bg-red-100' };
-    if (score < passingPercentage) return { grade: 'Can Do Better', color: 'text-yellow-600', bg: 'bg-yellow-100' };
-    return { grade: 'Pass', color: 'text-green-600', bg: 'bg-green-100' };
   };
 
   const getActionLabel = (
@@ -713,26 +705,18 @@ export default function CandidateDashboard() {
         ) : (
           <div className="space-y-4">
             {testResults.map((result) => {
-              const grade = getGrade(result.score || 0, result.tests.passing_percentage);
               const progressValue = Math.max(0, Math.min(100, Number(result.score || 0)));
 
               return (
                 <div key={result.id} className="rounded-xl border border-border/70 bg-card p-5 shadow-sm">
                   <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-3">
                     <h3 className="text-lg font-semibold">{result.tests.title}</h3>
-                    <Badge className={`${grade.bg} ${grade.color} border-none`}>{grade.grade}</Badge>
                   </div>
                   <Progress value={progressValue} className="h-2 mb-4" />
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="rounded-lg bg-slate-50 p-3 text-center">
                       <div className="text-2xl font-bold text-blue-700">{Math.round(Number(result.score || 0))}%</div>
                       <div className="text-xs text-muted-foreground mt-1">Score</div>
-                    </div>
-                    <div className="rounded-lg bg-slate-50 p-3 text-center">
-                      <div className={cn('text-2xl font-bold', result.passed ? 'text-green-700' : 'text-red-700')}>
-                        {result.passed ? 'PASSED' : 'FAILED'}
-                      </div>
-                      <div className="text-xs text-muted-foreground mt-1">Result</div>
                     </div>
                     <div className="rounded-lg bg-slate-50 p-3 text-center">
                       <div className="text-xl font-bold text-slate-800">
