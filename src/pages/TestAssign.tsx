@@ -39,6 +39,23 @@ interface AssignmentRow {
   updated_at?: string;
 }
 
+interface PendingAssignmentRow {
+  id: string;
+  email: string;
+  test_id: string;
+  question_count: number;
+  availability_window_minutes: number;
+  is_active: boolean;
+  assigned_by: string | null;
+  assigned_via: string;
+  source_unit: string | null;
+  source_file_name: string | null;
+  resolved_user_id: string | null;
+  resolved_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 interface SubmissionRow {
   id: string;
   assignment_id: string | null;
@@ -85,6 +102,7 @@ export default function TestAssign() {
   const [users, setUsers] = useState<User[]>([]);
   const [units, setUnits] = useState<string[]>([]);
   const [assignments, setAssignments] = useState<AssignmentRow[]>([]);
+  const [pendingAssignments, setPendingAssignments] = useState<PendingAssignmentRow[]>([]);
   const [submissions, setSubmissions] = useState<SubmissionRow[]>([]);
   const [retakePermissions, setRetakePermissions] = useState<Map<string, number>>(new Map());
   const [retakeDrafts, setRetakeDrafts] = useState<Record<string, string>>({});
@@ -109,6 +127,7 @@ export default function TestAssign() {
   const [assignmentTestFilter, setAssignmentTestFilter] = useState('all');
   const [assignmentStatusFilter, setAssignmentStatusFilter] = useState('all');
   const [showInactive, setShowInactive] = useState(false);
+  const [showScheduledOnboard, setShowScheduledOnboard] = useState(false);
 
   const [isLoading, setIsLoading] = useState(true);
   const [isAssigningUnit, setIsAssigningUnit] = useState(false);
@@ -116,9 +135,11 @@ export default function TestAssign() {
   const [isAssigningOnboarding, setIsAssigningOnboarding] = useState(false);
   const [isExportingAssignments, setIsExportingAssignments] = useState(false);
   const [isDeletingAssignments, setIsDeletingAssignments] = useState(false);
+  const [isDeletingPendingAssignments, setIsDeletingPendingAssignments] = useState(false);
   const [busyAssignmentIds, setBusyAssignmentIds] = useState<Set<string>>(new Set());
   const [busyRetakeKeys, setBusyRetakeKeys] = useState<Set<string>>(new Set());
   const [selectedAssignmentIds, setSelectedAssignmentIds] = useState<Set<string>>(new Set());
+  const [selectedPendingAssignmentIds, setSelectedPendingAssignmentIds] = useState<Set<string>>(new Set());
 
   const testsById = useMemo(
     () => new Map(tests.map((test) => [test.id, test])),
@@ -220,7 +241,7 @@ export default function TestAssign() {
       setUnits(Array.from(unitSet).sort((a, b) => a.localeCompare(b)));
 
       setTests((testsData || []) as unknown as Test[]);
-      await fetchAssignments();
+      await Promise.all([fetchAssignments(), fetchPendingAssignments()]);
     } catch (error) {
       console.error('Error fetching data:', error);
       toast({
@@ -373,6 +394,25 @@ export default function TestAssign() {
       }
     } catch (error) {
       console.error('Error fetching assignments:', error);
+    }
+  };
+
+  const fetchPendingAssignments = async () => {
+    try {
+      const supabaseUntyped = supabase as any;
+      const { data, error } = await supabaseUntyped
+        .from('pending_test_assignments')
+        .select(
+          'id, email, test_id, question_count, availability_window_minutes, is_active, assigned_by, assigned_via, source_unit, source_file_name, resolved_user_id, resolved_at, created_at, updated_at'
+        )
+        .order('created_at', { ascending: false })
+        .limit(500);
+
+      if (error) throw error;
+      setPendingAssignments((data || []) as PendingAssignmentRow[]);
+    } catch (error) {
+      console.error('Error fetching pending assignments:', error);
+      setPendingAssignments([]);
     }
   };
 
@@ -1050,7 +1090,7 @@ export default function TestAssign() {
             )
           : 0;
 
-      await fetchAssignments();
+      await Promise.all([fetchAssignments(), fetchPendingAssignments()]);
 
       toast({
         title: 'Onboarding assignment complete',
@@ -1164,6 +1204,36 @@ export default function TestAssign() {
     });
   }, [assignmentRows, assignmentSearch, assignmentTestFilter, assignmentStatusFilter, showInactive]);
 
+  const pendingAssignmentRows = useMemo(() => {
+    return pendingAssignments
+      .filter((assignment) => !assignment.resolved_user_id)
+      .map((assignment) => ({
+        assignment,
+        test: testsById.get(assignment.test_id),
+      }));
+  }, [pendingAssignments, testsById]);
+
+  const filteredPendingAssignments = useMemo(() => {
+    const query = assignmentSearch.trim().toLowerCase();
+    return pendingAssignmentRows.filter((row) => {
+      if (!showInactive && !row.assignment.is_active) return false;
+      if (assignmentTestFilter !== 'all' && row.assignment.test_id !== assignmentTestFilter) {
+        return false;
+      }
+      if (!query) return true;
+      const email = row.assignment.email.toLowerCase();
+      const testTitle = row.test?.title?.toLowerCase() || '';
+      const sourceFile = row.assignment.source_file_name?.toLowerCase() || '';
+      const sourceUnit = row.assignment.source_unit?.toLowerCase() || '';
+      return (
+        email.includes(query) ||
+        testTitle.includes(query) ||
+        sourceFile.includes(query) ||
+        sourceUnit.includes(query)
+      );
+    });
+  }, [pendingAssignmentRows, assignmentSearch, assignmentTestFilter, showInactive]);
+
   useEffect(() => {
     const availableIds = new Set(assignments.map((assignment) => assignment.id));
     setSelectedAssignmentIds((prev) => {
@@ -1176,6 +1246,23 @@ export default function TestAssign() {
       return next.size === prev.size ? prev : next;
     });
   }, [assignments]);
+
+  useEffect(() => {
+    const availableIds = new Set(
+      pendingAssignments
+        .filter((assignment) => !assignment.resolved_user_id)
+        .map((assignment) => assignment.id)
+    );
+    setSelectedPendingAssignmentIds((prev) => {
+      const next = new Set<string>();
+      prev.forEach((id) => {
+        if (availableIds.has(id)) {
+          next.add(id);
+        }
+      });
+      return next.size === prev.size ? prev : next;
+    });
+  }, [pendingAssignments]);
 
   const selectableVisibleAssignmentIds = useMemo(
     () =>
@@ -1200,6 +1287,29 @@ export default function TestAssign() {
     selectedVisibleCount === selectableVisibleAssignmentIds.length;
   const someVisibleSelected = selectedVisibleCount > 0 && !allVisibleSelected;
 
+  const selectableVisiblePendingAssignmentIds = useMemo(
+    () =>
+      filteredPendingAssignments
+        .map((row) => row.assignment)
+        .filter((assignment) => assignment.is_active)
+        .map((assignment) => assignment.id),
+    [filteredPendingAssignments]
+  );
+
+  const selectedVisiblePendingCount = useMemo(
+    () =>
+      selectableVisiblePendingAssignmentIds.reduce(
+        (count, assignmentId) => count + (selectedPendingAssignmentIds.has(assignmentId) ? 1 : 0),
+        0
+      ),
+    [selectableVisiblePendingAssignmentIds, selectedPendingAssignmentIds]
+  );
+
+  const allVisiblePendingSelected =
+    selectableVisiblePendingAssignmentIds.length > 0 &&
+    selectedVisiblePendingCount === selectableVisiblePendingAssignmentIds.length;
+  const someVisiblePendingSelected = selectedVisiblePendingCount > 0 && !allVisiblePendingSelected;
+
   const toggleAssignmentSelection = (assignmentId: string, checked: boolean) => {
     setSelectedAssignmentIds((prev) => {
       const next = new Set(prev);
@@ -1219,6 +1329,30 @@ export default function TestAssign() {
         selectableVisibleAssignmentIds.forEach((assignmentId) => next.delete(assignmentId));
       } else {
         selectableVisibleAssignmentIds.forEach((assignmentId) => next.add(assignmentId));
+      }
+      return next;
+    });
+  };
+
+  const togglePendingAssignmentSelection = (assignmentId: string, checked: boolean) => {
+    setSelectedPendingAssignmentIds((prev) => {
+      const next = new Set(prev);
+      if (checked) {
+        next.add(assignmentId);
+      } else {
+        next.delete(assignmentId);
+      }
+      return next;
+    });
+  };
+
+  const handleSelectAllVisiblePending = () => {
+    setSelectedPendingAssignmentIds((prev) => {
+      const next = new Set(prev);
+      if (allVisiblePendingSelected) {
+        selectableVisiblePendingAssignmentIds.forEach((assignmentId) => next.delete(assignmentId));
+      } else {
+        selectableVisiblePendingAssignmentIds.forEach((assignmentId) => next.add(assignmentId));
       }
       return next;
     });
@@ -1301,6 +1435,79 @@ export default function TestAssign() {
         return next;
       });
       setIsDeletingAssignments(false);
+    }
+  };
+
+  const handleDeleteSelectedPendingAssignments = async () => {
+    const selectedIds = Array.from(selectedPendingAssignmentIds);
+    if (selectedIds.length === 0) {
+      toast({
+        title: 'No queued records selected',
+        description: 'Select at least one scheduled onboarding assignment to delete.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const activeSelectedIds = selectedIds.filter((assignmentId) =>
+      pendingAssignments.some(
+        (assignment) =>
+          assignment.id === assignmentId && assignment.is_active && !assignment.resolved_user_id
+      )
+    );
+
+    if (activeSelectedIds.length === 0) {
+      toast({
+        title: 'Nothing to delete',
+        description: 'Selected queued assignments are already inactive or already resolved.',
+      });
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Delete ${activeSelectedIds.length} selected scheduled onboarding assignment(s)? They will not be assigned when those candidates register.`
+    );
+    if (!confirmed) return;
+
+    setIsDeletingPendingAssignments(true);
+    try {
+      const nowIso = new Date().toISOString();
+      const supabaseUntyped = supabase as any;
+      const { error } = await supabaseUntyped
+        .from('pending_test_assignments')
+        .update({ is_active: false, updated_at: nowIso })
+        .in('id', activeSelectedIds);
+
+      if (error) throw error;
+
+      const activeSet = new Set(activeSelectedIds);
+      setPendingAssignments((prev) =>
+        prev.map((assignment) =>
+          activeSet.has(assignment.id)
+            ? { ...assignment, is_active: false, updated_at: nowIso }
+            : assignment
+        )
+      );
+
+      setSelectedPendingAssignmentIds((prev) => {
+        const next = new Set(prev);
+        activeSelectedIds.forEach((assignmentId) => next.delete(assignmentId));
+        return next;
+      });
+
+      toast({
+        title: 'Scheduled assignments deleted',
+        description: `${activeSelectedIds.length} queued onboarding assignment(s) removed.`,
+      });
+    } catch (error) {
+      console.error('Error deleting selected pending assignments:', error);
+      toast({
+        title: 'Delete failed',
+        description: 'Unable to delete selected scheduled onboarding assignments.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsDeletingPendingAssignments(false);
     }
   };
 
@@ -1589,6 +1796,39 @@ export default function TestAssign() {
       setIsExportingAssignments(false);
     }
   };
+
+  const activeRowsCount = showScheduledOnboard
+    ? filteredPendingAssignments.length
+    : filteredAssignments.length;
+  const activeSelectableIds = showScheduledOnboard
+    ? selectableVisiblePendingAssignmentIds
+    : selectableVisibleAssignmentIds;
+  const activeSelectedVisibleCount = showScheduledOnboard
+    ? selectedVisiblePendingCount
+    : selectedVisibleCount;
+  const activeAllVisibleSelected = showScheduledOnboard
+    ? allVisiblePendingSelected
+    : allVisibleSelected;
+  const activeDeleteBusy = showScheduledOnboard
+    ? isDeletingPendingAssignments
+    : isDeletingAssignments;
+
+  const handleSelectAllVisibleForCurrentView = () => {
+    if (showScheduledOnboard) {
+      handleSelectAllVisiblePending();
+      return;
+    }
+    handleSelectAllVisible();
+  };
+
+  const handleDeleteSelectedForCurrentView = async () => {
+    if (showScheduledOnboard) {
+      await handleDeleteSelectedPendingAssignments();
+      return;
+    }
+    await handleDeleteSelectedAssignments();
+  };
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -1861,10 +2101,18 @@ export default function TestAssign() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex flex-col lg:flex-row lg:items-center gap-3">
+            <div className="flex items-center gap-2 text-sm">
+              <Switch checked={showScheduledOnboard} onCheckedChange={setShowScheduledOnboard} />
+              <span>Scheduled onboard queue</span>
+            </div>
             <div className="relative flex-1">
               <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
               <Input
-                placeholder="Search staff by name or email..."
+                placeholder={
+                  showScheduledOnboard
+                    ? 'Search queued onboarding by email, source, or test...'
+                    : 'Search staff by name or email...'
+                }
                 className="pl-8"
                 value={assignmentSearch}
                 onChange={(event) => setAssignmentSearch(event.target.value)}
@@ -1883,18 +2131,20 @@ export default function TestAssign() {
                 ))}
               </SelectContent>
             </Select>
-            <Select value={assignmentStatusFilter} onValueChange={setAssignmentStatusFilter}>
-              <SelectTrigger className="w-full lg:w-[200px]">
-                <SelectValue placeholder="Filter by status" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All statuses</SelectItem>
-                <SelectItem value="not_started">Not started</SelectItem>
-                <SelectItem value="in_progress">In progress</SelectItem>
-                <SelectItem value="failed">Failed to submit</SelectItem>
-                <SelectItem value="submitted">Submitted</SelectItem>
-              </SelectContent>
-            </Select>
+            {!showScheduledOnboard && (
+              <Select value={assignmentStatusFilter} onValueChange={setAssignmentStatusFilter}>
+                <SelectTrigger className="w-full lg:w-[200px]">
+                  <SelectValue placeholder="Filter by status" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All statuses</SelectItem>
+                  <SelectItem value="not_started">Not started</SelectItem>
+                  <SelectItem value="in_progress">In progress</SelectItem>
+                  <SelectItem value="failed">Failed to submit</SelectItem>
+                  <SelectItem value="submitted">Submitted</SelectItem>
+                </SelectContent>
+              </Select>
+            )}
             <div className="flex items-center gap-2 text-sm">
               <Switch checked={showInactive} onCheckedChange={setShowInactive} />
               <span>Show inactive</span>
@@ -1902,20 +2152,20 @@ export default function TestAssign() {
             <Button
               type="button"
               variant="outline"
-              onClick={handleSelectAllVisible}
-              disabled={selectableVisibleAssignmentIds.length === 0 || isDeletingAssignments}
+              onClick={handleSelectAllVisibleForCurrentView}
+              disabled={activeSelectableIds.length === 0 || activeDeleteBusy}
               className="w-full lg:w-auto"
             >
-              {allVisibleSelected ? 'Clear selection' : 'Select all'}
+              {activeAllVisibleSelected ? 'Clear selection' : 'Select all'}
             </Button>
             <Button
               type="button"
               variant="destructive"
-              onClick={() => void handleDeleteSelectedAssignments()}
-              disabled={selectedVisibleCount === 0 || isDeletingAssignments}
+              onClick={() => void handleDeleteSelectedForCurrentView()}
+              disabled={activeSelectedVisibleCount === 0 || activeDeleteBusy}
               className="w-full lg:w-auto"
             >
-              {isDeletingAssignments ? (
+              {activeDeleteBusy ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   Deleting...
@@ -1923,34 +2173,121 @@ export default function TestAssign() {
               ) : (
                 <>
                   <Trash2 className="mr-2 h-4 w-4" />
-                  Delete ({selectedVisibleCount})
+                  Delete ({activeSelectedVisibleCount})
                 </>
               )}
             </Button>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={downloadAssignmentsCsv}
-              disabled={isExportingAssignments || filteredAssignments.length === 0}
-              className="w-full lg:w-auto"
-            >
-              {isExportingAssignments ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Exporting...
-                </>
-              ) : (
-                <>
-                  <Download className="mr-2 h-4 w-4" />
-                  Download Status
-                </>
-              )}
-            </Button>
+            {!showScheduledOnboard && (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={downloadAssignmentsCsv}
+                disabled={isExportingAssignments || filteredAssignments.length === 0}
+                className="w-full lg:w-auto"
+              >
+                {isExportingAssignments ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Exporting...
+                  </>
+                ) : (
+                  <>
+                    <Download className="mr-2 h-4 w-4" />
+                    Download Status
+                  </>
+                )}
+              </Button>
+            )}
           </div>
 
-          {filteredAssignments.length === 0 ? (
+          {activeRowsCount === 0 ? (
             <div className="text-center text-muted-foreground py-8">
-              No assignments found.
+              {showScheduledOnboard
+                ? 'No scheduled onboarding assignments found.'
+                : 'No assignments found.'}
+            </div>
+          ) : showScheduledOnboard ? (
+            <div className="border rounded-md overflow-hidden">
+              <div className="max-h-[520px] overflow-y-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-[56px]">
+                        <Checkbox
+                          checked={
+                            allVisiblePendingSelected
+                              ? true
+                              : someVisiblePendingSelected
+                                ? 'indeterminate'
+                                : false
+                          }
+                          onCheckedChange={() => handleSelectAllVisiblePending()}
+                          disabled={
+                            selectableVisiblePendingAssignmentIds.length === 0 ||
+                            isDeletingPendingAssignments
+                          }
+                          aria-label="Select all scheduled onboarding assignments"
+                        />
+                      </TableHead>
+                      <TableHead className="w-[60px]">#</TableHead>
+                      <TableHead>Email</TableHead>
+                      <TableHead>Test</TableHead>
+                      <TableHead>Questions</TableHead>
+                      <TableHead>Window (mins)</TableHead>
+                      <TableHead>Date Queued</TableHead>
+                      <TableHead>Source</TableHead>
+                      <TableHead>Status</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filteredPendingAssignments.map((row, index) => {
+                      const assignment = row.assignment;
+                      const test = row.test;
+                      const isSelected = selectedPendingAssignmentIds.has(assignment.id);
+                      const checkboxDisabled = isDeletingPendingAssignments || !assignment.is_active;
+                      const queueStatusClass = assignment.is_active
+                        ? 'bg-blue-100 text-blue-800'
+                        : 'bg-slate-100 text-slate-700';
+                      const sourceLabel =
+                        assignment.source_file_name ||
+                        assignment.source_unit ||
+                        assignment.assigned_via ||
+                        'manual';
+
+                      return (
+                        <TableRow key={assignment.id}>
+                          <TableCell>
+                            <Checkbox
+                              checked={isSelected}
+                              onCheckedChange={(checked) =>
+                                togglePendingAssignmentSelection(assignment.id, checked === true)
+                              }
+                              disabled={checkboxDisabled}
+                              aria-label={`Select ${assignment.email}`}
+                            />
+                          </TableCell>
+                          <TableCell>{index + 1}</TableCell>
+                          <TableCell>
+                            <div className="font-medium">{assignment.email}</div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="font-medium">{test?.title || 'Unknown Test'}</div>
+                          </TableCell>
+                          <TableCell>{assignment.question_count}</TableCell>
+                          <TableCell>{assignment.availability_window_minutes}</TableCell>
+                          <TableCell>{formatDateTime(assignment.created_at)}</TableCell>
+                          <TableCell>{sourceLabel}</TableCell>
+                          <TableCell>
+                            <Badge className={queueStatusClass}>
+                              {assignment.is_active ? 'Queued' : 'Inactive'}
+                            </Badge>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
             </div>
           ) : (
             <div className="border rounded-md overflow-hidden">
