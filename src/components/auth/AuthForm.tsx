@@ -189,12 +189,12 @@ export function AuthForm() {
         try {
           const { error: candidateError } = await supabase
             .from('candidates')
-            .insert({
+            .upsert({
               name: fullName,
               unit: unit,
               email: email,
               status: 'pending',
-            });
+            }, { onConflict: 'email' });
 
           if (candidateError) throw candidateError;
         } catch (error) {
