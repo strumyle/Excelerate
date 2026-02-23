@@ -189,14 +189,17 @@ export function AuthForm() {
         try {
           const { error: candidateError } = await supabase
             .from('candidates')
-            .upsert({
+            .insert({
               name: fullName,
               unit: unit,
               email: email,
               status: 'pending',
-            }, { onConflict: 'email' });
+            });
 
-          if (candidateError) throw candidateError;
+          // Ignore duplicate email errors (23505) — candidate already exists
+          if (candidateError && candidateError.code !== '23505') {
+            throw candidateError;
+          }
         } catch (error) {
           console.error('Error saving candidate information:', error);
           toast({
