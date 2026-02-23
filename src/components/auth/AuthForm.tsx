@@ -39,7 +39,8 @@ export function AuthForm() {
   const [fullName, setFullName] = useState('');
   const [unit, setUnit] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [verificationSent, setVerificationSent] = useState(false);
+  // Email confirmation is disabled — no verification screen needed
+  // const [verificationSent, setVerificationSent] = useState(false);
   const { toast } = useToast();
   const navigate = useNavigate();
 
@@ -213,11 +214,16 @@ export function AuthForm() {
         });
 
         if (result) {
-          setVerificationSent(true);
           toast({
             title: 'Registration successful',
-            description: 'Please check your email to verify your account.',
+            description: 'Your account has been created. Please sign in.',
           });
+
+          // Switch back to login mode so the user can sign in
+          setMode('login');
+          setPassword('');
+          setFullName('');
+          setUnit('');
 
           try {
             if (result.user) {
@@ -268,21 +274,18 @@ export function AuthForm() {
     setConfirmPassword('');
     setFullName('');
     setUnit('');
-    setVerificationSent(false);
   };
 
   const switchToForgotPassword = () => {
     setMode('forgot');
     setPassword('');
     setConfirmPassword('');
-    setVerificationSent(false);
   };
 
   const switchToLogin = () => {
     setMode('login');
     setPassword('');
     setConfirmPassword('');
-    setVerificationSent(false);
   };
 
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -295,32 +298,7 @@ export function AuthForm() {
     (mode === 'forgot' && !email) ||
     (mode === 'reset' && (!password || !confirmPassword || password !== confirmPassword));
 
-  if (verificationSent) {
-    return (
-      <Card className="w-full max-w-md mx-auto">
-        <CardHeader>
-          <CardTitle className="text-2xl font-bold text-center">
-            Verification Email Sent
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="text-center">
-          <p className="mb-6">
-            Please check your email ({email}) and click the verification link to complete your registration.
-          </p>
-          <p className="text-sm text-muted-foreground mb-4">
-            After verification, you can log in to access your assigned test.
-          </p>
-          <Button
-            variant="outline"
-            className="mt-2"
-            onClick={switchToLogin}
-          >
-            Return to Login
-          </Button>
-        </CardContent>
-      </Card>
-    );
-  }
+  // Email confirmation is disabled — verification screen removed
 
   return (
     <Card className="w-full max-w-md mx-auto">
@@ -329,19 +307,19 @@ export function AuthForm() {
           {mode === 'login'
             ? 'Sign In to Excelerate'
             : mode === 'register'
-            ? 'Create Account'
-            : mode === 'forgot'
-            ? 'Reset Password'
-            : 'Set New Password'}
+              ? 'Create Account'
+              : mode === 'forgot'
+                ? 'Reset Password'
+                : 'Set New Password'}
         </CardTitle>
         <CardDescription className="text-center">
           {mode === 'login'
             ? 'Enter your credentials to access your account'
             : mode === 'register'
-            ? 'Create your account with any email address'
-            : mode === 'forgot'
-            ? 'Enter your email to receive a reset link'
-            : 'Enter and confirm your new password'}
+              ? 'Create your account with any email address'
+              : mode === 'forgot'
+                ? 'Enter your email to receive a reset link'
+                : 'Enter and confirm your new password'}
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -459,12 +437,12 @@ export function AuthForm() {
             {isLoading
               ? 'Processing...'
               : mode === 'login'
-              ? 'Sign In'
-              : mode === 'register'
-              ? 'Sign up'
-              : mode === 'forgot'
-              ? 'Send Reset Link'
-              : 'Update Password'}
+                ? 'Sign In'
+                : mode === 'register'
+                  ? 'Sign up'
+                  : mode === 'forgot'
+                    ? 'Send Reset Link'
+                    : 'Update Password'}
           </Button>
         </form>
       </CardContent>
